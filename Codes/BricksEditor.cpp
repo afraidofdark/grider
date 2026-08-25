@@ -62,16 +62,20 @@ namespace ToolKit
         return;
       }
 
+      // MeshFile stores a workspace-relative path (e.g. "ciiip/foo.mesh").
+      // Resolve it to a full path before loading, mirroring the engine's mesh
+      // deserialization (ParameterVariant MeshPtr case).
+      String fullPath = MeshPath(path);
       String ext;
-      DecomposePath(path, nullptr, nullptr, &ext);
+      DecomposePath(fullPath, nullptr, nullptr, &ext);
 
       if (ext == SKINMESH)
       {
-        m_mesh = GetMeshManager()->Create<SkinMesh>(path);
+        m_mesh = GetMeshManager()->Create<SkinMesh>(fullPath);
       }
       else
       {
-        m_mesh = GetMeshManager()->Create<Mesh>(path);
+        m_mesh = GetMeshManager()->Create<Mesh>(fullPath);
       }
 
       if (m_mesh)
@@ -186,15 +190,19 @@ namespace ToolKit
                        {
                          if (entry.m_ext == MESH || entry.m_ext == SKINMESH)
                          {
-                           SetBrickMesh(entry.GetFullPath());
-                           SetMeshFileVal(entry.GetFullPath());
+                           // Store workspace-relative so the setting survives a
+                           // project move (engine convention: resources are
+                           // referenced by their relative path).
+                           const String rel = GetRelativeResourcePath(entry.GetFullPath());
+                           SetBrickMesh(rel);
+                           SetMeshFileVal(rel);
                            SetPrefabFileVal("");
 
                            // Persist immediately so the setting survives an
                            // editor restart.
                            SaveSettings();
 
-                           TK_LOG("Selected brick mesh: %s", entry.GetFullPath().c_str());
+                           TK_LOG("Selected brick mesh: %s", rel.c_str());
                          }
                          else if (entry.m_ext == SCENE)
                          {
