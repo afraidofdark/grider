@@ -27,11 +27,16 @@ namespace ToolKit
       GetObjectFactory()->Unregister<BricksEditor>();
     }
 
+    BricksEditorPtr g_bricksEditor = nullptr;
+
     void PluginMain::Frame(float deltaTime)
     {
+      // Keeps the bridge quads in sync with the tiles' connection custom data.
+      if (g_bricksEditor)
+      {
+        g_bricksEditor->UpdateBridges();
+      }
     }
-
-    BricksEditorPtr g_bricksEditor = nullptr;
 
     void PluginMain::OnLoad(XmlDocumentPtr state)
     {

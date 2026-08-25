@@ -12,6 +12,8 @@
 
 #include <Editor/UI/Window.h>
 
+#include <unordered_map>
+
 namespace ToolKit
 {
   namespace Editor
@@ -50,6 +52,12 @@ namespace ToolKit
       TKDeclareParam(String, MeshFile);
       TKDeclareParam(String, PrefabFile);
 
+     public:
+      // Called every frame by the plugin. Rebuilds the connection bridges
+      // (bridge quads under each GridNode's BridgeNode) whenever the tiles'
+      // custom data state changes.
+      void UpdateBridges();
+
      private:
       // Loads the brick mesh resource from path. Empty path clears the mesh.
       void SetBrickMesh(const String& path);
@@ -57,6 +65,32 @@ namespace ToolKit
       // Loads the prefab scene and returns its boundary (AABB), used to size and
       // space the grid just like a mesh bounding box.
       BoundingBox GetPrefabBoundary();
+
+      // Rebuilds the bridge quads of a GridNode from its tiles' custom data
+      // (LeftCon/RightCon/FrontCon/BackCon). Existing bridges are cleared.
+      void RebuildBridges(EntityPtr gridNode);
+
+      // Returns a stable signature of a GridNode's tile connection state. Used
+      // to detect changes (connection toggles, tile add/remove).
+      String ComputeGridSignature(EntityPtr gridNode) const;
+
+      // Reads a boolean connection flag from the tile's custom data.
+      bool ReadTileConnection(const EntityPtr& tile, const char* name) const;
+
+      // Snapshot of a single tile's connection flags. Kept per GridNode so the
+      // plugin can tell which flag a user edited and mirror the reciprocal flag
+      // on the neighbour tile (one checkbox change updates both tiles).
+      struct TileFlags
+      {
+        bool left = false, right = false, front = false, back = false;
+      };
+
+      // Cached signatures per GridNode; drives change detection in UpdateBridges.
+      std::unordered_map<ObjectId, String> m_bridgeSignatures;
+
+      // Cached per-tile connection flags per GridNode. Compared against the live
+      // state in RebuildBridges to find the flag the user changed.
+      std::unordered_map<ObjectId, std::map<String, TileFlags>> m_tileFlags;
 
       // Runtime loaded mesh, derived from MeshFile. Not serialized directly.
       MeshPtr m_mesh = nullptr;
