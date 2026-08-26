@@ -44,17 +44,13 @@ namespace ToolKit
       // construction). They get saved/loaded automatically via the Object base.
       void ParameterConstructor() override;
 
-      // Rebuilds runtime state (the loaded mesh) after deserialization.
-      void ParameterEventConstructor() override;
-
      public:
-      // Serializable settings. GridSize is the NxN brick count; MeshFile is the
-      // path of the dropped brick mesh; PrefabFile is the relative path of the
-      // dropped brick prefab (.scene). Whichever of MeshFile/PrefabFile is set
-      // wins; when both are empty we fall back to unit cubes.
-      TKDeclareParam(int, GridSize);
-      TKDeclareParam(String, MeshFile);
-      TKDeclareParam(String, PrefabFile);
+      // Serializable settings. TileSize (D) is the width and depth of a tile,
+      // its height is fixed at g_tileHeight. GridCols (N) x GridRows (M) is the
+      // tile repeat count on the horizontal / vertical axes.
+      TKDeclareParam(float, TileSize);
+      TKDeclareParam(int, GridCols);
+      TKDeclareParam(int, GridRows);
 
      public:
       // Called every frame by the plugin. Rebuilds the connection bridges
@@ -63,12 +59,23 @@ namespace ToolKit
       void UpdateBridges();
 
      private:
-      // Loads the brick mesh resource from path. Empty path clears the mesh.
-      void SetBrickMesh(const String& path);
+      // Returns (creating and persisting on first use) an unlit color material
+      // under the project resources with the given file name. Idempotent: a
+      // material already saved with the project is reused instead of re-created.
+      MaterialPtr GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color);
 
-      // Loads the prefab scene and returns its boundary (AABB), used to size and
-      // space the grid just like a mesh bounding box.
-      BoundingBox GetPrefabBoundary();
+      // Returns the checker material used by the grid. dark selects between the
+      // light/dark gray checker pair.
+      MaterialPtr GetOrCreateCheckerMaterial(bool dark);
+
+      // Ensures the tile carries the given connection custom data, writing the
+      // value. Creates the entry if the tile does not have it yet.
+      void SetTileConnection(const EntityPtr& tile, const char* name, bool value);
+
+      // Returns the entity that holds the connection custom data for a grid
+      // child. Legacy prefab tiles carry it on an inner "Tile" entity; the
+      // auto-generated tiles carry it on themselves.
+      EntityPtr GetTileDataEntity(EntityPtr child) const;
 
       // Rebuilds the bridge quads of a GridNode from its tiles' custom data
       // (LeftCon/RightCon/FrontCon/BackCon). Existing bridges are cleared.
@@ -95,9 +102,6 @@ namespace ToolKit
       // Cached per-tile connection flags per GridNode. Compared against the live
       // state in RebuildBridges to find the flag the user changed.
       std::unordered_map<ObjectId, std::map<String, TileFlags>> m_tileFlags;
-
-      // Runtime loaded mesh, derived from MeshFile. Not serialized directly.
-      MeshPtr m_mesh = nullptr;
     };
 
     typedef std::shared_ptr<BricksEditor> BricksEditorPtr;

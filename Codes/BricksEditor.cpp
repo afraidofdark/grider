@@ -9,12 +9,12 @@
 
 #include <Editor/Source/App.h>
 #include <Editor/Source/EditorScene.h>
-#include <Editor/UI/View/View.h>
 
 #include <Entity.h>
 #include <Logger.h>
+#include <Material.h>
+#include <MaterialComponent.h>
 #include <Mesh.h>
-#include <MeshComponent.h>
 #include <Prefab.h>
 #include <Primative.h>
 #include <Util.h>
@@ -36,8 +36,24 @@ namespace ToolKit
 
     namespace
     {
-      // Thickness (depth axis) of the bridge quads.
-      constexpr float g_bridgeThickness = 0.2f;
+      // Fixed tile height. Tiles are always flat and short.
+      constexpr float g_tileHeight = 0.2f;
+
+      // Checker pair in gray tones. Deliberately not black/white: that reads as
+      // a harsh contrast, the checker only needs to separate adjacent tiles.
+      constexpr float g_checkerLight = 0.7f;
+      constexpr float g_checkerDark  = 0.3f;
+
+      // Bridge color: near black unlit so bridges read as structure against the
+      // gray tiles.
+      constexpr float g_bridgeColor = 0.02f;
+
+      // Bridge width relative to the tile's cross-axis extent (5% of D).
+      constexpr float g_bridgeThicknessRatio = 0.05f;
+
+      // Lifts the bridge quads above the tile tops so they don't Z-fight with
+      // the tile surface they sit on.
+      constexpr float g_bridgeLift = 0.01f;
 
       // Rounds a float to millimetre precision for stable keys.
       String RoundKey(float v)
@@ -59,58 +75,44 @@ namespace ToolKit
     {
       Super::ParameterConstructor();
 
-      GridSize_Define(1, "Bricks", 0, true, true);
-      MeshFile_Define("", "Bricks", 0, true, true);
-      PrefabFile_Define("", "Bricks", 0, true, true);
+      // D: width/depth of a tile (its height is fixed at g_tileHeight).
+      TileSize_Define(5.0f, "Tile", 0, true, true);
+      // N: horizontal repeat count, M: vertical repeat count.
+      GridCols_Define(4, "Tile", 0, true, true);
+      GridRows_Define(4, "Tile", 0, true, true);
     }
 
-    void BricksEditor::ParameterEventConstructor()
+    EntityPtr BricksEditor::GetTileDataEntity(EntityPtr child) const
     {
-      Super::ParameterEventConstructor();
-
-      // Restore the dropped mesh after deserialization.
-      SetBrickMesh(GetMeshFileVal());
-    }
-
-    void BricksEditor::SetBrickMesh(const String& path)
-    {
-      m_mesh = nullptr;
-      if (path.empty())
+      // Legacy prefab tiles carry the connection custom data on an inner "Tile"
+      // entity. Auto-generated tiles carry it on themselves.
+      if (Prefab* prefab = child->As<Prefab>())
       {
-        return;
+        if (EntityPtr tile = prefab->GetFirstByName("Tile"))
+        {
+          return tile;
+        }
       }
 
-      // MeshFile stores a workspace-relative path (e.g. "ciiip/foo.mesh").
-      // Resolve it to a full path before loading, mirroring the engine's mesh
-      // deserialization (ParameterVariant MeshPtr case).
-      String fullPath = MeshPath(path);
-      String ext;
-      DecomposePath(fullPath, nullptr, nullptr, &ext);
+      return child;
+    }
 
-      if (ext == SKINMESH)
+    void BricksEditor::SetTileConnection(const EntityPtr& tile, const char* name, bool value)
+    {
+      ParameterVariant* var = nullptr;
+      if (!tile->m_localData.LookUp(CustomDataCategory.Name, name, &var))
       {
-        m_mesh = GetMeshManager()->Create<SkinMesh>(fullPath);
+        // The tile does not carry the flag yet: create it so the connection
+        // state is fully self contained on the tile.
+        ParameterVariant newVar(value);
+        newVar.m_name     = name;
+        newVar.m_category = CustomDataCategory;
+        tile->m_localData.Add(newVar);
       }
       else
       {
-        m_mesh = GetMeshManager()->Create<Mesh>(fullPath);
+        *var = value;
       }
-
-      if (m_mesh)
-      {
-        m_mesh->Init(false);
-      }
-    }
-
-    BoundingBox BricksEditor::GetPrefabBoundary()
-    {
-      PrefabPtr probe = MakeNewPtr<Prefab>();
-      probe->SetPrefabPathVal(GetPrefabFileVal());
-      probe->Load();
-
-      // Load() parses the prefab scene; its boundary (AABB) is then available
-      // through the prefab entity's own bounding box.
-      return probe->GetBoundingBox();
     }
 
     bool BricksEditor::ReadTileConnection(const EntityPtr& tile, const char* name) const
@@ -122,6 +124,42 @@ namespace ToolKit
       }
 
       return false;
+    }
+
+    MaterialPtr BricksEditor::GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color)
+    {
+      const String path = MaterialPath(fileName);
+
+      // Idempotent: the material is saved with the project, so an existing
+      // material file is loaded (and cached) instead of re-created.
+      if (CheckFile(path))
+      {
+        return GetMaterialManager()->Create<Material>(path);
+      }
+
+      // First use: build an unlit color material (no diffuse texture, so the
+      // unlit shader uses the material color) and persist it under the project
+      // resources. It then survives restarts and is shared by every grid.
+      std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+
+      MaterialPtr mat = GetMaterialManager()->GetCopyOfUnlitColorMaterial(false);
+      mat->SetFile(path);
+      mat->SetColorVal(color);
+      mat->Init(false);
+      mat->Save(false);
+      GetMaterialManager()->Manage(mat);
+
+      return mat;
+    }
+
+    MaterialPtr BricksEditor::GetOrCreateCheckerMaterial(bool dark)
+    {
+      if (dark)
+      {
+        return GetOrCreateUnlitColorMaterial("BricksCheckerDark.material", Vec3(g_checkerDark));
+      }
+
+      return GetOrCreateUnlitColorMaterial("BricksCheckerLight.material", Vec3(g_checkerLight));
     }
 
     String BricksEditor::ComputeGridSignature(EntityPtr gridNode) const
@@ -146,22 +184,20 @@ namespace ToolKit
           continue;
         }
 
-        if (Prefab* prefab = child->As<Prefab>())
+        EntityPtr tile = GetTileDataEntity(child);
+        if (tile != nullptr)
         {
-          if (EntityPtr tile = prefab->GetFirstByName("Tile"))
-          {
-            Vec3 pos = prefab->m_node->GetTranslation(TransformationSpace::TS_WORLD);
-            String key = RoundKey(pos.x) + "," + RoundKey(pos.z);
+          Vec3 pos = child->m_node->GetTranslation(TransformationSpace::TS_WORLD);
+          String key = RoundKey(pos.x) + "," + RoundKey(pos.z);
 
-            String entry = key;
-            entry += "|";
-            entry += ReadTileConnection(tile, "LeftCon") ? "L" : ".";
-            entry += ReadTileConnection(tile, "RightCon") ? "R" : ".";
-            entry += ReadTileConnection(tile, "FrontCon") ? "F" : ".";
-            entry += ReadTileConnection(tile, "BackCon") ? "B" : ".";
+          String entry = key;
+          entry += "|";
+          entry += ReadTileConnection(tile, "LeftCon") ? "L" : ".";
+          entry += ReadTileConnection(tile, "RightCon") ? "R" : ".";
+          entry += ReadTileConnection(tile, "FrontCon") ? "F" : ".";
+          entry += ReadTileConnection(tile, "BackCon") ? "B" : ".";
 
-            entries[key] = entry;
-          }
+          entries[key] = entry;
         }
       }
 
@@ -249,6 +285,10 @@ namespace ToolKit
         return;
       }
 
+      // Near-black unlit material for the bridge quads (created lazily,
+      // idempotent). Shared by every bridge of every grid.
+      MaterialPtr bridgeMat = GetOrCreateUnlitColorMaterial("BricksBridge.material", Vec3(g_bridgeColor));
+
       // Find (or create) the BridgeNode child that parents all bridges.
       EntityPtr bridgeNode = nullptr;
       for (Node* childNode : gridNode->m_node->m_children)
@@ -293,7 +333,7 @@ namespace ToolKit
         Vec3 center;    // World position of the tile center at its top surface.
         Vec3 size;      // Tile extent (AABB max-min).
         bool left, right, front, back;
-        EntityPtr prefab; // Owning prefab entity (to write reciprocal custom data).
+        EntityPtr entity; // Owning entity (to write reciprocal custom data).
       };
 
       std::vector<Tile> tiles;
@@ -311,25 +351,23 @@ namespace ToolKit
           continue;
         }
 
-        if (Prefab* prefab = child->As<Prefab>())
+        EntityPtr tile = GetTileDataEntity(child);
+        if (tile != nullptr)
         {
-          if (EntityPtr tile = prefab->GetFirstByName("Tile"))
-          {
-            const BoundingBox& bb = prefab->GetBoundingBox();
-            Vec3 pos             = prefab->m_node->GetTranslation(TransformationSpace::TS_WORLD);
+          const BoundingBox& bb = child->GetBoundingBox();
+          Vec3 pos              = child->m_node->GetTranslation(TransformationSpace::TS_WORLD);
 
-            Tile t;
-            t.center.x = pos.x + (bb.min.x + bb.max.x) * 0.5f;
-            t.center.y = pos.y + bb.max.y;
-            t.center.z = pos.z + (bb.min.z + bb.max.z) * 0.5f;
-            t.size     = bb.max - bb.min;
-            t.left     = ReadTileConnection(tile, "LeftCon");
-            t.right    = ReadTileConnection(tile, "RightCon");
-            t.front    = ReadTileConnection(tile, "FrontCon");
-            t.back     = ReadTileConnection(tile, "BackCon");
-            t.prefab   = child;
-            tiles.push_back(t);
-          }
+          Tile t;
+          t.center.x = pos.x + (bb.min.x + bb.max.x) * 0.5f;
+          t.center.y = pos.y + bb.max.y;
+          t.center.z = pos.z + (bb.min.z + bb.max.z) * 0.5f;
+          t.size     = bb.max - bb.min;
+          t.left     = ReadTileConnection(tile, "LeftCon");
+          t.right    = ReadTileConnection(tile, "RightCon");
+          t.front    = ReadTileConnection(tile, "FrontCon");
+          t.back     = ReadTileConnection(tile, "BackCon");
+          t.entity   = child;
+          tiles.push_back(t);
         }
       }
 
@@ -405,7 +443,8 @@ namespace ToolKit
           // Write the reciprocal flag on the neighbour tile's custom data, the
           // same way the editor's property panel does. Saved with the scene on
           // the next save.
-          if (EntityPtr nbTile = nb.prefab ? nb.prefab->As<Prefab>()->GetFirstByName("Tile") : nullptr)
+          EntityPtr nbTile = GetTileDataEntity(nb.entity);
+          if (nbTile != nullptr)
           {
             ParameterVariant* var = nullptr;
             if (nbTile->m_localData.LookUp(CustomDataCategory.Name, recipName, &var))
@@ -451,7 +490,7 @@ namespace ToolKit
       auto createBridge = [&](const Tile& a, const Tile& b, bool alongX)
       {
         Vec3 mid     = (a.center + b.center) * 0.5f;
-        mid.y        = a.center.y > b.center.y ? a.center.y : b.center.y;
+        mid.y        = (a.center.y > b.center.y ? a.center.y : b.center.y) + g_bridgeLift;
 
         String key = RoundKey(mid.x) + "," + RoundKey(mid.z);
         if (!placedMidpoints.insert(key).second)
@@ -461,13 +500,19 @@ namespace ToolKit
 
         QuadPtr quad = MakeNewPtr<Quad>();
         quad->SetNameVal("Bridge");
+        quad->GetMaterialComponent()->SetFirstMaterial(bridgeMat);
 
         quad->m_node->SetTranslation(mid, TransformationSpace::TS_WORLD);
         quad->m_node->SetOrientation(glm::angleAxis(glm::radians(-90.0f), X_AXIS), TransformationSpace::TS_WORLD);
 
-        float length = alongX ? fabsf(b.center.x - a.center.x) : fabsf(b.center.z - a.center.z);
-        quad->m_node->SetScale(Vec3(alongX ? length : g_bridgeThickness,
-                                    alongX ? g_bridgeThickness : length,
+        // The bridge spans tile center to tile center along one axis and is a
+        // slim strip across the other: its width is 5% of the tile's extent on
+        // that cross axis.
+        float cross     = alongX ? a.size.z : a.size.x;
+        float thickness = cross * g_bridgeThicknessRatio;
+        float length    = alongX ? fabsf(b.center.x - a.center.x) : fabsf(b.center.z - a.center.z);
+        quad->m_node->SetScale(Vec3(alongX ? length : thickness,
+                                    alongX ? thickness : length,
                                     1.0f));
 
         scene->AddEntity(quad);
@@ -597,8 +642,7 @@ namespace ToolKit
         const char* xmlRootObject = Object::StaticClass()->Name.c_str();
         if (XmlNode* objNode = root->first_node(xmlRootObject))
         {
-          // Restores GridSize/MeshFile and, via ParameterEventConstructor,
-          // reloads the brick mesh.
+          // Restores TileSize / GridCols / GridRows.
           DeSerialize(info, objNode);
         }
       }
@@ -606,80 +650,43 @@ namespace ToolKit
 
     void BricksEditor::Show()
     {
-      ImGui::SetNextWindowSize(ImVec2(340, 260), ImGuiCond_Once);
+      ImGui::SetNextWindowSize(ImVec2(340, 220), ImGuiCond_Once);
       if (ImGui::Begin(m_name.c_str(), &m_visible))
       {
         HandleStates();
 
-        // ---- Brick mesh ----------------------------------------------------
-        ImGui::SeparatorText("Brick Mesh");
+        // ---- Tile geometry -------------------------------------------------
+        ImGui::SeparatorText("Tile");
 
-        // Drop a mesh (.mesh) or a prefab (.scene) to use it as the brick.
-        // Placed bricks use the object's bounding box to size and space
-        // themselves.
-        // DropZone passes `file` to ImGui::ImageButton as its id, so it must
-        // never be empty (ImGui asserts on an empty id at the window root).
-        const String prefabFile = GetPrefabFileVal();
-        const String meshFile   = GetMeshFileVal();
-        const String current    = !prefabFile.empty() ? prefabFile : meshFile;
-        const String dropFile   = current.empty() ? "##BrickMesh" : current;
-        TexturePtr dropIcon     = !prefabFile.empty() ? UI::m_prefabIcn : UI::m_meshIcon;
-        View::DropZone(EditorImGuiTextureCache::Acquire(dropIcon),
-                       dropFile,
-                       [this](const DirectoryEntry& entry)
-                       {
-                         if (entry.m_ext == MESH || entry.m_ext == SKINMESH)
-                         {
-                           // Store workspace-relative so the setting survives a
-                           // project move (engine convention: resources are
-                           // referenced by their relative path).
-                           const String rel = GetRelativeResourcePath(entry.GetFullPath());
-                           SetBrickMesh(rel);
-                           SetMeshFileVal(rel);
-                           SetPrefabFileVal("");
-
-                           // Persist immediately so the setting survives an
-                           // editor restart.
-                           SaveSettings();
-
-                           TK_LOG("Selected brick mesh: %s", rel.c_str());
-                         }
-                         else if (entry.m_ext == SCENE)
-                         {
-                           SetMeshFileVal("");
-                           m_mesh = nullptr;
-                           SetPrefabFileVal(GetRelativeResourcePath(entry.GetFullPath()));
-
-                           SaveSettings();
-
-                           TK_LOG("Selected brick prefab: %s", entry.GetFullPath().c_str());
-                         }
-                         else
-                         {
-                           GetApp()->SetStatusMsg(g_statusFailed);
-                           TK_ERR("Only mesh or scene (prefab) files are accepted.");
-                         }
-                       },
-                       "Brick (Mesh / Prefab)");
-
-        // ---- Grid -----------------------------------------------------------
-        ImGui::SeparatorText("Grid");
-
-        int gridSize = GetGridSizeVal();
-        if (ImGui::InputInt("Size (N x N)", &gridSize, 1, 10))
+        float size = GetTileSizeVal();
+        if (ImGui::InputFloat("Size (D)", &size, 0.1f, 1.0f, "%.2f"))
         {
-          if (gridSize < 1)
-            gridSize = 1;
-          if (gridSize > 100)
-            gridSize = 100;
-
-          SetGridSizeVal(gridSize);
+          size = glm::clamp(size, 0.1f, 100.0f);
+          SetTileSizeVal(size);
           SaveSettings();
         }
 
+        int cols = GetGridColsVal();
+        if (ImGui::InputInt("Columns (N)", &cols, 1, 10))
+        {
+          cols = glm::clamp(cols, 1, 100);
+          SetGridColsVal(cols);
+          SaveSettings();
+        }
+
+        int rows = GetGridRowsVal();
+        if (ImGui::InputInt("Rows (M)", &rows, 1, 10))
+        {
+          rows = glm::clamp(rows, 1, 100);
+          SetGridRowsVal(rows);
+          SaveSettings();
+        }
+
+        ImGui::Text("Height: %.2f (fixed)", g_tileHeight);
+
         // ---- Place ----------------------------------------------------------
         ImGui::Spacing();
-        if (ImGui::Button("Place Bricks", ImVec2(-FLT_MIN, 0)))
+        if (ImGui::Button("Place Grid", ImVec2(-FLT_MIN, 0)))
         {
           App* app = GetApp();
           if (app && app->m_cursor)
@@ -689,102 +696,53 @@ namespace ToolKit
             EditorScenePtr scene = app->GetCurrentScene();
             if (scene)
             {
-              int N = GetGridSizeVal();
+              const float D   = GetTileSizeVal();
+              const int N     = GetGridColsVal();
+              const int M     = GetGridRowsVal();
 
-              // Determine the brick source and its bounding box. Prefab and
-              // mesh both tile by their AABB; an empty source falls back to
-              // unit cubes.
-              const bool isPrefab = !GetPrefabFileVal().empty();
-              const bool isMesh   = !isPrefab && m_mesh != nullptr;
+              // The checker pair is created lazily and reused (idempotent), so
+              // the tool is self sufficient: no user supplied asset required.
+              MaterialPtr lightMat = GetOrCreateCheckerMaterial(false);
+              MaterialPtr darkMat  = GetOrCreateCheckerMaterial(true);
 
-              BoundingBox bb;
-              Vec3 size(1.0f);
-              bool valid = true;
+              // Master group: an empty entity that parents every placed tile,
+              // keeping the outliner organized.
+              EntityPtr master = MakeNewPtr<Entity>();
+              master->SetNameVal("GridNode");
+              master->m_node->SetTranslation(cursorPos, TransformationSpace::TS_WORLD);
+              scene->AddEntity(master);
 
-              if (isPrefab)
+              float originX = floorf(cursorPos.x / D) * D;
+              float originZ = floorf(cursorPos.z / D) * D;
+
+              for (int iz = 0; iz < M; ++iz)
               {
-                bb    = GetPrefabBoundary();
-                size  = bb.max - bb.min;
-                valid = size.x >= 0.0001f && size.z >= 0.0001f;
-                if (!valid)
-                {
-                  TK_ERR("Selected prefab has an empty bounding box.");
-                }
-              }
-              else if (isMesh)
-              {
-                bb    = m_mesh->m_boundingBox;
-                size  = bb.max - bb.min;
-                valid = size.x >= 0.0001f && size.z >= 0.0001f;
-                if (!valid)
-                {
-                  TK_ERR("Selected mesh has an empty bounding box.");
-                }
-              }
-              else
-              {
-                // Unit cube centered at its origin.
-                bb.min = Vec3(-0.5f);
-                bb.max = Vec3(0.5f);
-              }
-
-              if (valid)
-              {
-                // Master group: an empty entity that parents every placed
-                // brick, keeping the outliner organized.
-                EntityPtr master = MakeNewPtr<Entity>();
-                master->SetNameVal("GridNode");
-                master->m_node->SetTranslation(cursorPos, TransformationSpace::TS_WORLD);
-                scene->AddEntity(master);
-
-                float originX = floorf(cursorPos.x / size.x) * size.x;
-                float originZ = floorf(cursorPos.z / size.z) * size.z;
-
                 for (int ix = 0; ix < N; ++ix)
                 {
-                  for (int iz = 0; iz < N; ++iz)
-                  {
-                    // Tiles by the brick's AABB: the min corner sits on the
-                    // cell and the brick rests on the ground plane.
-                    Vec3 pos(originX + ix * size.x - bb.min.x,
-                             -bb.min.y,
-                             originZ + iz * size.z - bb.min.z);
+                  const bool darkTile = ((ix + iz) % 2) == 1;
 
-                    if (isPrefab)
-                    {
-                      // Instantiate the prefab at this cell. AddEntity links
-                      // the prefab's contents into the scene.
-                      PrefabPtr prefab = MakeNewPtr<Prefab>();
-                      prefab->SetPrefabPathVal(GetPrefabFileVal());
-                      prefab->Load();
-                      prefab->Init(scene);
-                      scene->AddEntity(prefab);
+                  CubePtr cube = MakeNewPtr<Cube>();
+                  cube->SetNameVal("Tile_" + std::to_string(ix) + "x" + std::to_string(iz));
+                  // Re-generates the cube geometry at the tile size. The cube
+                  // rests on the ground plane when centered at half its height.
+                  cube->SetCubeScaleVal(Vec3(D, g_tileHeight, D));
+                  cube->GetMeshComponent()->Init(false);
+                  cube->GetMaterialComponent()->SetFirstMaterial(darkTile ? darkMat : lightMat);
 
-                      prefab->m_node->SetTranslation(pos, TransformationSpace::TS_WORLD);
-                      master->m_node->AddChild(prefab->m_node, true);
-                    }
-                    else if (isMesh)
-                    {
-                      EntityPtr ntt = MakeNewPtr<Entity>();
-                      MeshComponentPtr meshCom = ntt->AddComponent<MeshComponent>();
-                      meshCom->SetMeshVal(m_mesh);
-                      ntt->m_node->SetTranslation(pos, TransformationSpace::TS_WORLD);
+                  Vec3 pos(originX + ix * D, g_tileHeight * 0.5f, originZ + iz * D);
+                  cube->m_node->SetTranslation(pos, TransformationSpace::TS_WORLD);
 
-                      scene->AddEntity(ntt);
-                      master->m_node->AddChild(ntt->m_node, true);
-                    }
-                    else
-                    {
-                      CubePtr cube = MakeNewPtr<Cube>();
-                      cube->GetMeshComponent()->Init(false);
-                      cube->m_node->SetTranslation(pos, TransformationSpace::TS_WORLD);
+                  scene->AddEntity(cube);
+                  master->m_node->AddChild(cube->m_node, true);
 
-                      scene->AddEntity(cube);
-                      master->m_node->AddChild(cube->m_node, true);
-                    }
-                  }
+                  // Auto-set the connection custom data so the tile is self
+                  // contained (bridges work without a prefab author). Default
+                  // to all sides connected: a fresh grid is fully bridged.
+                  SetTileConnection(cube, "LeftCon", true);
+                  SetTileConnection(cube, "RightCon", true);
+                  SetTileConnection(cube, "FrontCon", true);
+                  SetTileConnection(cube, "BackCon", true);
                 }
-
               }
             }
           }
