@@ -115,8 +115,31 @@ namespace ToolKit
       EntityPtr InstantiatePlacement(const EditorScenePtr& scene, const String& fullPath, const String& ext);
 
       // Drops the instantiated asset onto the currently selected tile: centered
-      // on it, resting on its top surface, facing the selected direction.
+      // on it, resting on its top surface, facing the selected direction, and
+      // parented under the tile so it follows the tile and can be re-aligned.
       void PlaceObjectOnSelectedTile();
+
+      // Center of the tile's top surface in world space. Same math as
+      // RebuildBridges (local AABB offset by the world translation).
+      Vec3 GetTileTopCenter(const EntityPtr& tile) const;
+
+      // True when the entity is a tile: a direct child of a GridNode (the
+      // plugin's BridgeNode master is excluded).
+      bool IsTile(const EntityPtr& e) const;
+
+      // True when the entity is an object placed by the tool: parented directly
+      // under a tile so it moves and re-aligns with the tile it was dropped on.
+      bool IsPlacedObject(const EntityPtr& e) const;
+
+      // Nearest compass direction the object's -Z (front) faces, derived from
+      // its world orientation so the compass stays in sync even if the object
+      // was rotated by hand in the viewport.
+      int FacingDir(const EntityPtr& obj) const;
+
+      // Rotates a placed object so its -Z faces the given direction and
+      // re-anchors it on the tile it sits under (centered, base flush with the
+      // tile top). Used to adjust a placement's direction after the fact.
+      void ReorientPlacedObject(const EntityPtr& obj, int dir);
 
       // Full (absolute) path / extension / file name of the asset in the
       // placement DropZone. The absolute path is runtime-only; the persisted

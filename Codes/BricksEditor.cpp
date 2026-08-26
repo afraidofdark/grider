@@ -181,6 +181,47 @@ namespace ToolKit
       }
     }
 
+    int BricksEditor::FacingDir(const EntityPtr& obj) const
+    {
+      // The object's -Z (front) in world space, projected onto the XZ plane.
+      // Read from the world orientation so a manually rotated object still
+      // snaps to the nearest compass direction.
+      Vec3 f = obj->m_node->GetOrientation(TransformationSpace::TS_WORLD) * Vec3(0.0f, 0.0f, -1.0f);
+      if (fabsf(f.x) >= fabsf(f.z))
+      {
+        return f.x >= 0.0f ? PlacementDirXp : PlacementDirXm;
+      }
+
+      return f.z >= 0.0f ? PlacementDirZp : PlacementDirZm;
+    }
+
+    bool BricksEditor::IsTile(const EntityPtr& e) const
+    {
+      if (e == nullptr)
+      {
+        return false;
+      }
+
+      EntityPtr parent = e->Parent();
+      return parent != nullptr && parent->GetNameVal() == "GridNode" && e->GetNameVal() != "BridgeNode";
+    }
+
+    bool BricksEditor::IsPlacedObject(const EntityPtr& e) const
+    {
+      // A placed object is parented directly under a tile, so it is recognized
+      // by its position in the grid hierarchy alone (no side table to keep in
+      // sync with the scene).
+      return e != nullptr && e->Parent() != nullptr && IsTile(e->Parent());
+    }
+
+    Vec3 BricksEditor::GetTileTopCenter(const EntityPtr& tile) const
+    {
+      Vec3 pos       = tile->m_node->GetTranslation(TransformationSpace::TS_WORLD);
+      BoundingBox bb = tile->GetBoundingBox();
+
+      return Vec3(pos.x + (bb.min.x + bb.max.x) * 0.5f, pos.y + bb.max.y, pos.z + (bb.min.z + bb.max.z) * 0.5f);
+    }
+
     EntityPtr BricksEditor::InstantiatePlacement(const EditorScenePtr& scene, const String& fullPath, const String& ext)
     {
       if (scene == nullptr || fullPath.empty())
@@ -284,9 +325,7 @@ namespace ToolKit
       }
 
       // Tile top-surface center (same math as RebuildBridges).
-      Vec3 pos      = sel->m_node->GetTranslation(TransformationSpace::TS_WORLD);
-      BoundingBox tbb = sel->GetBoundingBox();
-      Vec3 topCenter(pos.x + (tbb.min.x + tbb.max.x) * 0.5f, pos.y + tbb.max.y, pos.z + (tbb.min.z + tbb.max.z) * 0.5f);
+      Vec3 topCenter = GetTileTopCenter(sel);
 
       EntityPtr obj = InstantiatePlacement(scene, m_placementPath, m_placementExt);
       if (obj == nullptr)
@@ -307,7 +346,35 @@ namespace ToolKit
       delta.y         = topCenter.y - obb.min.y;
       obj->m_node->SetTranslation(objPos + delta, TransformationSpace::TS_WORLD);
 
+      // Parent the object under the tile, keeping its world transform. This is
+      // what marks it as a placed object later: the tool recognizes it by its
+      // parent, and it follows the tile if the grid moves. Node does not
+      // inherit the parent's scale by default, so the object stays unscaled.
+      sel->m_node->AddChild(obj->m_node, true);
+
       scene->AddToSelection(obj->GetIdVal(), false);
+    }
+
+    void BricksEditor::ReorientPlacedObject(const EntityPtr& obj, int dir)
+    {
+      EntityPtr tile = obj->Parent();
+      if (tile == nullptr)
+      {
+        return;
+      }
+
+      // Same alignment as placement: face the new direction, then re-anchor the
+      // object's world AABB on the tile (centered, base flush with the top).
+      float yaw = PlacementYaw(dir);
+      obj->m_node->SetOrientation(glm::angleAxis(glm::radians(yaw), Y_AXIS), TransformationSpace::TS_WORLD);
+
+      Vec3 topCenter = GetTileTopCenter(tile);
+      Vec3 objPos    = obj->m_node->GetTranslation(TransformationSpace::TS_WORLD);
+      BoundingBox obb = obj->GetBoundingBox(true);
+      Vec3 objCenter = (obb.min + obb.max) * 0.5f;
+      Vec3 delta     = topCenter - objCenter;
+      delta.y        = topCenter.y - obb.min.y;
+      obj->m_node->SetTranslation(objPos + delta, TransformationSpace::TS_WORLD);
     }
 
     MaterialPtr BricksEditor::GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color)
@@ -974,11 +1041,38 @@ namespace ToolKit
           ImGui::TextDisabled("Drop a mesh or prefab (.scene) above.");
         }
 
+        // What the placement section acts on this frame. A tile is a placement
+        // target (Place drops a new object onto it); a placed object (parented
+        // under a tile) can have its direction re-aligned live. The mode is
+        // re-derived from the selection every frame, so the UI can't go stale.
+        EditorScenePtr scene = GetApp() ? GetApp()->GetCurrentScene() : nullptr;
+        EntityPtr sel        = scene ? scene->GetCurrentSelection() : nullptr;
+        const bool onTile    = IsTile(sel);
+        const bool onPlaced  = IsPlacedObject(sel);
+
+        ImGui::Spacing();
+        if (onPlaced)
+        {
+          ImGui::Text("Selected: %s (placed)", sel->GetNameVal().c_str());
+        }
+        else if (onTile)
+        {
+          ImGui::Text("Selected tile: %s", sel->GetNameVal().c_str());
+        }
+        else
+        {
+          ImGui::TextDisabled("Select a tile to place, or a placed object to re-align.");
+        }
+
         // Compass: the four axis directions around a center Place button.
         // Matches the grid axis convention (Left=-X, Right=+X, Front=-Z).
+        // When a placed object is selected the compass shows (and edits) that
+        // object's facing; otherwise it holds the persisted direction for the
+        // next Place.
         ImGui::Spacing();
         ImGui::PushID("BricksPlacementCompass");
-        int dir = GetPlacementDirVal();
+        const int startDir = onPlaced ? FacingDir(sel) : GetPlacementDirVal();
+        int dir            = startDir;
         if (ImGui::BeginTable("##BricksPlacementCompass", 3))
         {
           ImGui::TableNextRow();
@@ -993,7 +1087,14 @@ namespace ToolKit
           ImGui::TableNextColumn();
           ImGui::RadioButton("X-", &dir, PlacementDirXm);
           ImGui::TableNextColumn();
-          if (ImGui::Button("Place", ImVec2(64, 0)))
+          if (onPlaced)
+          {
+            // A placed object is re-oriented by its compass radios directly.
+            ImGui::BeginDisabled();
+            ImGui::Button("Place", ImVec2(64, 0));
+            ImGui::EndDisabled();
+          }
+          else if (ImGui::Button("Place", ImVec2(64, 0)))
           {
             SetPlacementDirVal(dir);
             PlaceObjectOnSelectedTile();
@@ -1011,8 +1112,16 @@ namespace ToolKit
 
           ImGui::EndTable();
         }
-        if (dir != GetPlacementDirVal())
+
+        // Apply a direction change: re-align the selected placed object, or
+        // store the new default direction for the next Place.
+        if (dir != startDir)
         {
+          if (onPlaced)
+          {
+            ReorientPlacedObject(sel, dir);
+          }
+
           SetPlacementDirVal(dir);
           SaveSettings();
         }
