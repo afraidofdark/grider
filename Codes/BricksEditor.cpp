@@ -192,10 +192,10 @@ namespace ToolKit
 
           String entry = key;
           entry += "|";
-          entry += ReadTileConnection(tile, "LeftCon") ? "L" : ".";
-          entry += ReadTileConnection(tile, "RightCon") ? "R" : ".";
-          entry += ReadTileConnection(tile, "FrontCon") ? "F" : ".";
-          entry += ReadTileConnection(tile, "BackCon") ? "B" : ".";
+          entry += ReadTileConnection(tile, "X-") ? "L" : ".";
+          entry += ReadTileConnection(tile, "X+") ? "R" : ".";
+          entry += ReadTileConnection(tile, "Z-") ? "F" : ".";
+          entry += ReadTileConnection(tile, "Z+") ? "B" : ".";
 
           entries[key] = entry;
         }
@@ -362,10 +362,10 @@ namespace ToolKit
           t.center.y = pos.y + bb.max.y;
           t.center.z = pos.z + (bb.min.z + bb.max.z) * 0.5f;
           t.size     = bb.max - bb.min;
-          t.left     = ReadTileConnection(tile, "LeftCon");
-          t.right    = ReadTileConnection(tile, "RightCon");
-          t.front    = ReadTileConnection(tile, "FrontCon");
-          t.back     = ReadTileConnection(tile, "BackCon");
+          t.left     = ReadTileConnection(tile, "X-");
+          t.right    = ReadTileConnection(tile, "X+");
+          t.front    = ReadTileConnection(tile, "Z-");
+          t.back     = ReadTileConnection(tile, "Z+");
           t.entity   = child;
           tiles.push_back(t);
         }
@@ -380,7 +380,7 @@ namespace ToolKit
       }
 
       // ---- Reciprocal flag sync ---------------------------------------------
-      // The user edits a single checkbox (say a tile's LeftCon). Mirror that
+      // The user edits a single checkbox (say a tile's X- side). Mirror that
       // change onto the facing checkbox of the neighbour tile so the custom
       // data stays symmetric: turning one side off (or on) updates both tiles
       // in one action.
@@ -429,10 +429,10 @@ namespace ToolKit
           bool* recip = nullptr;
           switch (dir)
           {
-            case 'L': recipName = "RightCon"; recip = &nb.right; break;
-            case 'R': recipName = "LeftCon";  recip = &nb.left;  break;
-            case 'F': recipName = "BackCon";  recip = &nb.back;  break;
-            default:  recipName = "FrontCon"; recip = &nb.front; break;
+            case 'L': recipName = "X+";  recip = &nb.right; break;
+            case 'R': recipName = "X-";  recip = &nb.left;  break;
+            case 'F': recipName = "Z+";  recip = &nb.back;  break;
+            default:  recipName = "Z-";  recip = &nb.front; break;
           }
 
           if (*recip == value)
@@ -738,10 +738,10 @@ namespace ToolKit
                   // Auto-set the connection custom data so the tile is self
                   // contained (bridges work without a prefab author). Default
                   // to all sides connected: a fresh grid is fully bridged.
-                  SetTileConnection(cube, "LeftCon", true);
-                  SetTileConnection(cube, "RightCon", true);
-                  SetTileConnection(cube, "FrontCon", true);
-                  SetTileConnection(cube, "BackCon", true);
+                  SetTileConnection(cube, "X-", true);
+                  SetTileConnection(cube, "X+", true);
+                  SetTileConnection(cube, "Z-", true);
+                  SetTileConnection(cube, "Z+", true);
                 }
               }
             }

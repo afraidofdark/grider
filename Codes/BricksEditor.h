@@ -78,7 +78,7 @@ namespace ToolKit
       EntityPtr GetTileDataEntity(EntityPtr child) const;
 
       // Rebuilds the bridge quads of a GridNode from its tiles' custom data
-      // (LeftCon/RightCon/FrontCon/BackCon). Existing bridges are cleared.
+      // (X-/X+/Z-/Z+). Existing bridges are cleared.
       void RebuildBridges(EntityPtr gridNode);
 
       // Returns a stable signature of a GridNode's tile connection state. Used
