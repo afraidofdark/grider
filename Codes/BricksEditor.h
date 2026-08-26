@@ -19,7 +19,11 @@ namespace ToolKit
   namespace Editor
   {
 
-    class TK_EDITOR_API BricksEditor : public Window
+    // No TK_EDITOR_API here: the plugin consumes the editor headers with
+    // TK_EDITOR_API == dllimport, but this class is *defined* in the plugin.
+    // Marking it dllimport makes MSVC reject the static Class member definition
+    // (C2491) and warn about inconsistent linkage on every method (C4273).
+    class BricksEditor : public Window
     {
      public:
       TKDeclareClass(BricksEditor, Window);
