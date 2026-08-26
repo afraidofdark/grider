@@ -9,14 +9,18 @@
 
 #include <Editor/Source/App.h>
 #include <Editor/Source/EditorScene.h>
+#include <Editor/UI/EditorImGuiTextureCache.h>
+#include <Editor/UI/View/View.h>
 
 #include <Entity.h>
 #include <Logger.h>
 #include <Material.h>
 #include <MaterialComponent.h>
 #include <Mesh.h>
+#include <MeshComponent.h>
 #include <Prefab.h>
 #include <Primative.h>
+#include <SkeletonComponent.h>
 #include <Util.h>
 
 #include <filesystem>
@@ -60,6 +64,40 @@ namespace ToolKit
       {
         return std::to_string(static_cast<long long>(std::round(v * 1000.0f)));
       }
+
+      // Converts an absolute resource path to the workspace-relative form that
+      // gets persisted in the plugin settings (e.g. "Meshes/Cube.mesh"). Returns
+      // the input unchanged when the path isn't under the resource root.
+      String ToResourceRelativePath(const String& absolute)
+      {
+        String root = NormalizePath(Main::GetInstance()->m_resourceRoot);
+        if (root.empty())
+        {
+          return absolute;
+        }
+
+        String path = NormalizePath(absolute);
+        if (path.size() > root.size() && path.compare(0, root.size(), root) == 0 &&
+            path[root.size()] == GetPathSeparator())
+        {
+          return path.substr(root.size() + 1);
+        }
+
+        return absolute;
+      }
+
+      // Inverse of ToResourceRelativePath: re-attaches the workspace resource
+      // root so a persisted relative path resolves back to a real file.
+      String ToResourceAbsolutePath(const String& relative)
+      {
+        String root = NormalizePath(Main::GetInstance()->m_resourceRoot);
+        if (root.empty())
+        {
+          return relative;
+        }
+
+        return ConcatPaths({root, relative});
+      }
     }
 
     BricksEditor::BricksEditor()
@@ -80,6 +118,10 @@ namespace ToolKit
       // N: horizontal repeat count, M: vertical repeat count.
       GridCols_Define(4, "Tile", 0, true, true);
       GridRows_Define(4, "Tile", 0, true, true);
+      // Placement tool state. Hidden params: persisted with the window, but not
+      // exposed as editable properties (they live in the window UI only).
+      PlacementPath_Define("", "Placement", 0, false, false);
+      PlacementDir_Define(PlacementDirZm, "Placement", 0, false, false);
     }
 
     EntityPtr BricksEditor::GetTileDataEntity(EntityPtr child) const
@@ -124,6 +166,148 @@ namespace ToolKit
       }
 
       return false;
+    }
+
+    float BricksEditor::PlacementYaw(int dir) const
+    {
+      // Rotating about +Y by theta maps the local -Z (forward) to
+      // (-sin(theta), 0, -cos(theta)). Solve theta for each target axis.
+      switch (dir)
+      {
+        case PlacementDirXp: return -90.0f; // forward -> +X
+        case PlacementDirXm: return 90.0f;  // forward -> -X
+        case PlacementDirZp: return 180.0f; // forward -> +Z
+        default: return 0.0f;               // PlacementDirZm: forward already faces -Z.
+      }
+    }
+
+    EntityPtr BricksEditor::InstantiatePlacement(const EditorScenePtr& scene, const String& fullPath, const String& ext)
+    {
+      if (scene == nullptr || fullPath.empty())
+      {
+        return nullptr;
+      }
+
+      if (ext == SCENE)
+      {
+        // Prefabs are .scene files under the project's Prefabs folder.
+        String path   = GetRelativeResourcePath(fullPath);
+        String folder = fullPath.substr(0, fullPath.length() - path.length());
+        if (folder != PrefabPath(""))
+        {
+          TK_ERR("BricksEditor: Can't place a prefab outside of the Prefabs folder: %s", fullPath.c_str());
+          return nullptr;
+        }
+
+        PrefabPtr prefab = MakeNewPtr<Prefab>();
+        prefab->SetNameVal(m_placementName);
+        prefab->SetPrefabPathVal(path);
+        prefab->Load();
+        prefab->Init(scene);
+        scene->AddEntity(prefab); // AddEntity links the prefab roots into the scene.
+
+        return prefab;
+      }
+
+      if (ext == MESH || ext == SKINMESH)
+      {
+        // Mirrors EditorViewport::LoadDragMesh: a plain entity carrying the
+        // mesh through a MeshComponent.
+        EntityPtr entity = MakeNewPtr<Entity>();
+        entity->SetNameVal(m_placementName);
+        entity->AddComponent<MeshComponent>();
+
+        MeshPtr mesh;
+        if (ext == SKINMESH)
+        {
+          mesh = GetMeshManager()->Create<SkinMesh>(fullPath);
+        }
+        else
+        {
+          mesh = GetMeshManager()->Create<Mesh>(fullPath);
+        }
+        entity->GetMeshComponent()->SetMeshVal(mesh);
+        mesh->Init(false);
+
+        if (mesh->IsSkinned())
+        {
+          SkeletonComponentPtr skelComp = entity->AddComponent<SkeletonComponent>();
+          skelComp->SetSkeletonResourceVal(((SkinMesh*) mesh.get())->m_skeleton);
+          skelComp->Init();
+        }
+
+        MaterialComponentPtr matComp = entity->AddComponent<MaterialComponent>();
+        matComp->UpdateMaterialList();
+
+        scene->AddEntity(entity);
+        return entity;
+      }
+
+      TK_ERR("BricksEditor: Unsupported placement drop type: %s", ext.c_str());
+      return nullptr;
+    }
+
+    void BricksEditor::PlaceObjectOnSelectedTile()
+    {
+      App* app = GetApp();
+      if (app == nullptr)
+      {
+        return;
+      }
+
+      if (m_placementPath.empty())
+      {
+        app->SetStatusMsg(g_statusFailed);
+        return;
+      }
+
+      EditorScenePtr scene = app->GetCurrentScene();
+      if (scene == nullptr)
+      {
+        return;
+      }
+
+      // The placement target is a tile: a child of a GridNode (bridges are the
+      // plugin's own entities and must not be a placement target).
+      EntityPtr sel = scene->GetCurrentSelection();
+      if (sel == nullptr || sel->GetNameVal() == "BridgeNode")
+      {
+        app->SetStatusMsg(g_statusFailed);
+        return;
+      }
+
+      EntityPtr parent = sel->Parent();
+      if (parent == nullptr || parent->GetNameVal() != "GridNode")
+      {
+        app->SetStatusMsg(g_statusFailed);
+        return;
+      }
+
+      // Tile top-surface center (same math as RebuildBridges).
+      Vec3 pos      = sel->m_node->GetTranslation(TransformationSpace::TS_WORLD);
+      BoundingBox tbb = sel->GetBoundingBox();
+      Vec3 topCenter(pos.x + (tbb.min.x + tbb.max.x) * 0.5f, pos.y + tbb.max.y, pos.z + (tbb.min.z + tbb.max.z) * 0.5f);
+
+      EntityPtr obj = InstantiatePlacement(scene, m_placementPath, m_placementExt);
+      if (obj == nullptr)
+      {
+        return;
+      }
+
+      // Face the object's -Z (front) toward the selected direction.
+      float yaw = PlacementYaw(GetPlacementDirVal());
+      obj->m_node->SetOrientation(glm::angleAxis(glm::radians(yaw), Y_AXIS), TransformationSpace::TS_WORLD);
+
+      // Center it on the tile and drop its base onto the tile top. The world
+      // bounding box is read after orienting so the rotation is accounted for.
+      Vec3 objPos     = obj->m_node->GetTranslation(TransformationSpace::TS_WORLD);
+      BoundingBox obb = obj->GetBoundingBox(true);
+      Vec3 objCenter  = (obb.min + obb.max) * 0.5f;
+      Vec3 delta      = topCenter - objCenter;
+      delta.y         = topCenter.y - obb.min.y;
+      obj->m_node->SetTranslation(objPos + delta, TransformationSpace::TS_WORLD);
+
+      scene->AddToSelection(obj->GetIdVal(), false);
     }
 
     MaterialPtr BricksEditor::GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color)
@@ -642,15 +826,24 @@ namespace ToolKit
         const char* xmlRootObject = Object::StaticClass()->Name.c_str();
         if (XmlNode* objNode = root->first_node(xmlRootObject))
         {
-          // Restores TileSize / GridCols / GridRows.
+          // Restores TileSize / GridCols / GridRows / PlacementPath / PlacementDir.
           DeSerialize(info, objNode);
         }
+      }
+
+      // Restore the placement asset from its persisted resource-relative path
+      // and re-derive the runtime fields from it.
+      const String& rel = GetPlacementPathVal();
+      if (!rel.empty())
+      {
+        m_placementPath = ToResourceAbsolutePath(rel);
+        DecomposePath(m_placementPath, nullptr, &m_placementName, &m_placementExt);
       }
     }
 
     void BricksEditor::Show()
     {
-      ImGui::SetNextWindowSize(ImVec2(340, 220), ImGuiCond_Once);
+      ImGui::SetNextWindowSize(ImVec2(340, 440), ImGuiCond_Once);
       if (ImGui::Begin(m_name.c_str(), &m_visible))
       {
         HandleStates();
@@ -747,6 +940,83 @@ namespace ToolKit
             }
           }
         }
+
+        // ---- Placement -------------------------------------------------------
+        ImGui::Spacing();
+        ImGui::SeparatorText("Placement");
+
+        // DropZone: accepts a mesh / skinMesh / scene prefab from the asset
+        // browser. Stores the dropped file so Place can instantiate it. The
+        // current m_placementPath is fed back as the file, so once something is
+        // dropped the zone shows that asset's thumbnail (empty path = plain
+        // drop target with the fallback icon).
+        View::DropZone(EditorImGuiTextureCache::Acquire(UI::m_meshIcon),
+                       m_placementPath,
+                       [this](DirectoryEntry& entry) -> void
+                       {
+                         m_placementPath = entry.GetFullPath();
+                         m_placementExt  = entry.m_ext;
+                         m_placementName = entry.m_fileName;
+                         // Persist as a workspace-relative path so the setting
+                         // survives workspace moves; keep the absolute form for
+                         // the runtime DropZone / instantiation.
+                         SetPlacementPathVal(ToResourceRelativePath(m_placementPath));
+                         SaveSettings();
+                       },
+                       "Prefab / Mesh");
+
+        if (!m_placementName.empty())
+        {
+          ImGui::Text("Drop: %s", m_placementName.c_str());
+        }
+        else
+        {
+          ImGui::TextDisabled("Drop a mesh or prefab (.scene) above.");
+        }
+
+        // Compass: the four axis directions around a center Place button.
+        // Matches the grid axis convention (Left=-X, Right=+X, Front=-Z).
+        ImGui::Spacing();
+        ImGui::PushID("BricksPlacementCompass");
+        int dir = GetPlacementDirVal();
+        if (ImGui::BeginTable("##BricksPlacementCompass", 3))
+        {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Dummy(ImVec2(24, 24));
+          ImGui::TableNextColumn();
+          ImGui::RadioButton("Z+", &dir, PlacementDirZp);
+          ImGui::TableNextColumn();
+          ImGui::Dummy(ImVec2(24, 24));
+
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::RadioButton("X-", &dir, PlacementDirXm);
+          ImGui::TableNextColumn();
+          if (ImGui::Button("Place", ImVec2(64, 0)))
+          {
+            SetPlacementDirVal(dir);
+            PlaceObjectOnSelectedTile();
+          }
+          ImGui::TableNextColumn();
+          ImGui::RadioButton("X+", &dir, PlacementDirXp);
+
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Dummy(ImVec2(24, 24));
+          ImGui::TableNextColumn();
+          ImGui::RadioButton("Z-", &dir, PlacementDirZm);
+          ImGui::TableNextColumn();
+          ImGui::Dummy(ImVec2(24, 24));
+
+          ImGui::EndTable();
+        }
+        if (dir != GetPlacementDirVal())
+        {
+          SetPlacementDirVal(dir);
+          SaveSettings();
+        }
+        ImGui::PopID();
       }
       ImGui::End();
     }

@@ -51,6 +51,11 @@ namespace ToolKit
       TKDeclareParam(float, TileSize);
       TKDeclareParam(int, GridCols);
       TKDeclareParam(int, GridRows);
+      // Resource-relative path of the asset in the placement DropZone. Stored
+      // relative (not absolute) so the setting survives workspace moves.
+      TKDeclareParam(String, PlacementPath);
+      // Selected compass direction of the placement tool (persisted).
+      TKDeclareParam(int, PlacementDir);
 
      public:
       // Called every frame by the plugin. Rebuilds the connection bridges
@@ -87,6 +92,38 @@ namespace ToolKit
 
       // Reads a boolean connection flag from the tile's custom data.
       bool ReadTileConnection(const EntityPtr& tile, const char* name) const;
+
+      // ---- Placement tool ---------------------------------------------------
+
+      // Direction the placed object's -Z (front) faces. Mirrors the grid's axis
+      // convention (Left=-X, Right=+X, Front=-Z, Back=+Z).
+      enum PlacementDir
+      {
+        PlacementDirXp = 0, // +X (right)
+        PlacementDirXm,     // -X (left)
+        PlacementDirZp,     // +Z (back)
+        PlacementDirZm      // -Z (front)
+      };
+
+      // Yaw in degrees about +Y that makes an object's -Z face the given
+      // direction. Used to orient a placement before it snaps onto a tile.
+      float PlacementYaw(int dir) const;
+
+      // Instantiates the dropped asset (mesh / skinMesh / scene prefab) into the
+      // scene, ready to be positioned. Returns null when the asset can't be
+      // loaded or isn't a supported drop type.
+      EntityPtr InstantiatePlacement(const EditorScenePtr& scene, const String& fullPath, const String& ext);
+
+      // Drops the instantiated asset onto the currently selected tile: centered
+      // on it, resting on its top surface, facing the selected direction.
+      void PlaceObjectOnSelectedTile();
+
+      // Full (absolute) path / extension / file name of the asset in the
+      // placement DropZone. The absolute path is runtime-only; the persisted
+      // form is the resource-relative PlacementPath param.
+      String m_placementPath;
+      String m_placementExt;
+      String m_placementName;
 
       // Snapshot of a single tile's connection flags. Kept per GridNode so the
       // plugin can tell which flag a user edited and mirror the reciprocal flag
