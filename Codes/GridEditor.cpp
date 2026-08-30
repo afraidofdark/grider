@@ -65,6 +65,26 @@ namespace ToolKit
         return std::to_string(static_cast<long long>(std::round(v * 1000.0f)));
       }
 
+      // World-space AABB of an entity and its whole child hierarchy. The engine
+      // bounding box only covers an entity's own MeshComponent, which is empty
+      // for prefab roots (their geometry lives on children), so the true
+      // footprint is merged from every descendant. Used to pivot placed objects
+      // on their real center and drop them flush on the tile top.
+      BoundingBox GetWorldBounds(EntityPtr root)
+      {
+        BoundingBox bounds = root->GetBoundingBox(true);
+
+        for (Node* childNode : root->m_node->m_children)
+        {
+          if (EntityPtr child = childNode->OwnerEntity())
+          {
+            bounds.UpdateBoundary(GetWorldBounds(child));
+          }
+        }
+
+        return bounds;
+      }
+
       // Converts an absolute resource path to the workspace-relative form that
       // gets persisted in the plugin settings (e.g. "Meshes/Cube.mesh"). Returns
       // the input unchanged when the path isn't under the resource root.
@@ -295,9 +315,11 @@ namespace ToolKit
 
       // Center it on the tile and drop its base onto the tile top. The world
       // bounding box is read after orienting so the rotation is accounted for.
+      // GetWorldBounds includes child geometry, so prefab placements pivot on
+      // their real center (a prefab root carries no mesh of its own).
       Vec3 objPos     = obj->m_node->GetTranslation(TransformationSpace::TS_WORLD);
-      BoundingBox obb = obj->GetBoundingBox(true);
-      Vec3 objCenter  = (obb.min + obb.max) * 0.5f;
+      BoundingBox obb = GetWorldBounds(obj);
+      Vec3 objCenter  = obb.GetCenter();
       Vec3 delta      = topCenter - objCenter;
       delta.y         = topCenter.y - obb.min.y;
       obj->m_node->SetTranslation(objPos + delta, TransformationSpace::TS_WORLD);
@@ -319,18 +341,10 @@ namespace ToolKit
         return;
       }
 
-      // Same alignment as placement: face the new direction, then re-anchor the
-      // object's world AABB on the tile (centered, base flush with the top).
+      // The object's node origin rests on the tile center, so a world-space
+      // Y-axis turn spins it in place without moving it.
       float yaw = PlacementYaw(dir);
       obj->m_node->SetOrientation(glm::angleAxis(glm::radians(yaw), Y_AXIS), TransformationSpace::TS_WORLD);
-
-      Vec3 topCenter = GetTileTopCenter(tile);
-      Vec3 objPos    = obj->m_node->GetTranslation(TransformationSpace::TS_WORLD);
-      BoundingBox obb = obj->GetBoundingBox(true);
-      Vec3 objCenter = (obb.min + obb.max) * 0.5f;
-      Vec3 delta     = topCenter - objCenter;
-      delta.y        = topCenter.y - obb.min.y;
-      obj->m_node->SetTranslation(objPos + delta, TransformationSpace::TS_WORLD);
     }
 
     MaterialPtr GridEditor::GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color)
