@@ -19,36 +19,36 @@ namespace ToolKit
     void PluginMain::Init(Main* master)
     {
       Main::SetProxy(master);
-      GetObjectFactory()->Register<BricksEditor>();
+      GetObjectFactory()->Register<GridEditor>();
     }
 
     void PluginMain::Destroy()
     {
-      GetObjectFactory()->Unregister<BricksEditor>();
+      GetObjectFactory()->Unregister<GridEditor>();
     }
 
-    BricksEditorPtr g_bricksEditor = nullptr;
+    GridEditorPtr g_gridEditor = nullptr;
 
     void PluginMain::Frame(float deltaTime)
     {
       // Keeps the bridge quads in sync with the tiles' connection custom data.
-      if (g_bricksEditor)
+      if (g_gridEditor)
       {
-        g_bricksEditor->UpdateBridges();
+        g_gridEditor->UpdateBridges();
       }
     }
 
     void PluginMain::OnLoad(XmlDocumentPtr state)
     {
-      g_bricksEditor = MakeNewPtr<BricksEditor>();
-      g_bricksEditor->LoadSettings();
-      g_bricksEditor->AddToUI();
+      g_gridEditor = MakeNewPtr<GridEditor>();
+      g_gridEditor->LoadSettings();
+      g_gridEditor->AddToUI();
     }
 
     void PluginMain::OnUnload(XmlDocumentPtr state)
     {
-      g_bricksEditor->RemoveFromUI();
-      g_bricksEditor = nullptr;
+      g_gridEditor->RemoveFromUI();
+      g_gridEditor = nullptr;
     }
 
     void PluginMain::OnPlay() {}

@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "GridGraph.h"
+
 #include <Plugin.h>
 #include <ToolKit.h>
 
@@ -23,13 +25,13 @@ namespace ToolKit
     // TK_EDITOR_API == dllimport, but this class is *defined* in the plugin.
     // Marking it dllimport makes MSVC reject the static Class member definition
     // (C2491) and warn about inconsistent linkage on every method (C4273).
-    class BricksEditor : public Window
+    class GridEditor : public Window
     {
      public:
-      TKDeclareClass(BricksEditor, Window);
+      TKDeclareClass(GridEditor, Window);
 
-      BricksEditor();
-      ~BricksEditor();
+      GridEditor();
+      ~GridEditor();
 
       void Show() override;
 
@@ -73,25 +75,13 @@ namespace ToolKit
       // light/dark gray checker pair.
       MaterialPtr GetOrCreateCheckerMaterial(bool dark);
 
-      // Ensures the tile carries the given connection custom data, writing the
-      // value. Creates the entry if the tile does not have it yet.
-      void SetTileConnection(const EntityPtr& tile, const char* name, bool value);
-
-      // Returns the entity that holds the connection custom data for a grid
-      // child. Legacy prefab tiles carry it on an inner "Tile" entity; the
-      // auto-generated tiles carry it on themselves.
-      EntityPtr GetTileDataEntity(EntityPtr child) const;
-
-      // Rebuilds the bridge quads of a GridNode from its tiles' custom data
-      // (X-/X+/Z-/Z+). Existing bridges are cleared.
+      // Rebuilds the bridge quads of a GridNode from the node connections
+      // modelled by GridGraph (X-/X+/Z-/Z+). Existing bridges are cleared.
       void RebuildBridges(EntityPtr gridNode);
 
       // Returns a stable signature of a GridNode's tile connection state. Used
       // to detect changes (connection toggles, tile add/remove).
       String ComputeGridSignature(EntityPtr gridNode) const;
-
-      // Reads a boolean connection flag from the tile's custom data.
-      bool ReadTileConnection(const EntityPtr& tile, const char* name) const;
 
       // ---- Placement tool ---------------------------------------------------
 
@@ -164,7 +154,7 @@ namespace ToolKit
       std::unordered_map<ObjectId, std::map<String, TileFlags>> m_tileFlags;
     };
 
-    typedef std::shared_ptr<BricksEditor> BricksEditorPtr;
+    typedef std::shared_ptr<GridEditor> GridEditorPtr;
 
   } // namespace Editor
 } // namespace ToolKit

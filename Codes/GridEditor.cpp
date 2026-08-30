@@ -5,7 +5,7 @@
  * please visit [otsoftware.tr] or contact us at [info@otsoftare.tr].
  */
 
-#include "BricksEditor.h"
+#include "GridEditor.h"
 
 #include <Editor/Source/App.h>
 #include <Editor/Source/EditorScene.h>
@@ -36,7 +36,7 @@ namespace ToolKit
   namespace Editor
   {
 
-    TKDefineClass(BricksEditor, Window);
+    TKDefineClass(GridEditor, Window);
 
     namespace
     {
@@ -100,16 +100,16 @@ namespace ToolKit
       }
     }
 
-    BricksEditor::BricksEditor()
+    GridEditor::GridEditor()
     {
-      m_name = "Bricks Editor";
+      m_name = "Grid Editor";
     }
 
-    BricksEditor::~BricksEditor()
+    GridEditor::~GridEditor()
     {
     }
 
-    void BricksEditor::ParameterConstructor()
+    void GridEditor::ParameterConstructor()
     {
       Super::ParameterConstructor();
 
@@ -124,51 +124,7 @@ namespace ToolKit
       PlacementDir_Define(PlacementDirZm, "Placement", 0, false, false);
     }
 
-    EntityPtr BricksEditor::GetTileDataEntity(EntityPtr child) const
-    {
-      // Legacy prefab tiles carry the connection custom data on an inner "Tile"
-      // entity. Auto-generated tiles carry it on themselves.
-      if (Prefab* prefab = child->As<Prefab>())
-      {
-        if (EntityPtr tile = prefab->GetFirstByName("Tile"))
-        {
-          return tile;
-        }
-      }
-
-      return child;
-    }
-
-    void BricksEditor::SetTileConnection(const EntityPtr& tile, const char* name, bool value)
-    {
-      ParameterVariant* var = nullptr;
-      if (!tile->m_localData.LookUp(CustomDataCategory.Name, name, &var))
-      {
-        // The tile does not carry the flag yet: create it so the connection
-        // state is fully self contained on the tile.
-        ParameterVariant newVar(value);
-        newVar.m_name     = name;
-        newVar.m_category = CustomDataCategory;
-        tile->m_localData.Add(newVar);
-      }
-      else
-      {
-        *var = value;
-      }
-    }
-
-    bool BricksEditor::ReadTileConnection(const EntityPtr& tile, const char* name) const
-    {
-      ParameterVariant* var = nullptr;
-      if (tile->m_localData.LookUp(CustomDataCategory.Name, name, &var))
-      {
-        return var->GetCVar<bool>();
-      }
-
-      return false;
-    }
-
-    float BricksEditor::PlacementYaw(int dir) const
+    float GridEditor::PlacementYaw(int dir) const
     {
       // Rotating about +Y by theta maps the local -Z (forward) to
       // (-sin(theta), 0, -cos(theta)). Solve theta for each target axis.
@@ -181,7 +137,7 @@ namespace ToolKit
       }
     }
 
-    int BricksEditor::FacingDir(const EntityPtr& obj) const
+    int GridEditor::FacingDir(const EntityPtr& obj) const
     {
       // The object's -Z (front) in world space, projected onto the XZ plane.
       // Read from the world orientation so a manually rotated object still
@@ -195,7 +151,7 @@ namespace ToolKit
       return f.z >= 0.0f ? PlacementDirZp : PlacementDirZm;
     }
 
-    bool BricksEditor::IsTile(const EntityPtr& e) const
+    bool GridEditor::IsTile(const EntityPtr& e) const
     {
       if (e == nullptr)
       {
@@ -206,7 +162,7 @@ namespace ToolKit
       return parent != nullptr && parent->GetNameVal() == "GridNode" && e->GetNameVal() != "BridgeNode";
     }
 
-    bool BricksEditor::IsPlacedObject(const EntityPtr& e) const
+    bool GridEditor::IsPlacedObject(const EntityPtr& e) const
     {
       // A placed object is parented directly under a tile, so it is recognized
       // by its position in the grid hierarchy alone (no side table to keep in
@@ -214,7 +170,7 @@ namespace ToolKit
       return e != nullptr && e->Parent() != nullptr && IsTile(e->Parent());
     }
 
-    Vec3 BricksEditor::GetTileTopCenter(const EntityPtr& tile) const
+    Vec3 GridEditor::GetTileTopCenter(const EntityPtr& tile) const
     {
       Vec3 pos       = tile->m_node->GetTranslation(TransformationSpace::TS_WORLD);
       BoundingBox bb = tile->GetBoundingBox();
@@ -222,7 +178,7 @@ namespace ToolKit
       return Vec3(pos.x + (bb.min.x + bb.max.x) * 0.5f, pos.y + bb.max.y, pos.z + (bb.min.z + bb.max.z) * 0.5f);
     }
 
-    EntityPtr BricksEditor::InstantiatePlacement(const EditorScenePtr& scene, const String& fullPath, const String& ext)
+    EntityPtr GridEditor::InstantiatePlacement(const EditorScenePtr& scene, const String& fullPath, const String& ext)
     {
       if (scene == nullptr || fullPath.empty())
       {
@@ -236,7 +192,7 @@ namespace ToolKit
         String folder = fullPath.substr(0, fullPath.length() - path.length());
         if (folder != PrefabPath(""))
         {
-          TK_ERR("BricksEditor: Can't place a prefab outside of the Prefabs folder: %s", fullPath.c_str());
+          TK_ERR("GridEditor: Can't place a prefab outside of the Prefabs folder: %s", fullPath.c_str());
           return nullptr;
         }
 
@@ -284,11 +240,11 @@ namespace ToolKit
         return entity;
       }
 
-      TK_ERR("BricksEditor: Unsupported placement drop type: %s", ext.c_str());
+      TK_ERR("GridEditor: Unsupported placement drop type: %s", ext.c_str());
       return nullptr;
     }
 
-    void BricksEditor::PlaceObjectOnSelectedTile()
+    void GridEditor::PlaceObjectOnSelectedTile()
     {
       App* app = GetApp();
       if (app == nullptr)
@@ -355,7 +311,7 @@ namespace ToolKit
       scene->AddToSelection(obj->GetIdVal(), false);
     }
 
-    void BricksEditor::ReorientPlacedObject(const EntityPtr& obj, int dir)
+    void GridEditor::ReorientPlacedObject(const EntityPtr& obj, int dir)
     {
       EntityPtr tile = obj->Parent();
       if (tile == nullptr)
@@ -377,7 +333,7 @@ namespace ToolKit
       obj->m_node->SetTranslation(objPos + delta, TransformationSpace::TS_WORLD);
     }
 
-    MaterialPtr BricksEditor::GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color)
+    MaterialPtr GridEditor::GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color)
     {
       const String path = MaterialPath(fileName);
 
@@ -403,7 +359,7 @@ namespace ToolKit
       return mat;
     }
 
-    MaterialPtr BricksEditor::GetOrCreateCheckerMaterial(bool dark)
+    MaterialPtr GridEditor::GetOrCreateCheckerMaterial(bool dark)
     {
       if (dark)
       {
@@ -413,43 +369,27 @@ namespace ToolKit
       return GetOrCreateUnlitColorMaterial("BricksCheckerLight.material", Vec3(g_checkerLight));
     }
 
-    String BricksEditor::ComputeGridSignature(EntityPtr gridNode) const
+    String GridEditor::ComputeGridSignature(EntityPtr gridNode) const
     {
-      // Ordered by cell so the signature is stable regardless of the order the
-      // children are iterated in.
+      // Model the grid from the tiles, then emit a per-cell entry. Ordered by
+      // cell so the signature is stable regardless of the order the children
+      // are iterated in.
+      GridGraph graph;
+      graph.LoadFromScene(gridNode);
+
       std::map<String, String> entries;
-
-      for (Node* childNode : gridNode->m_node->m_children)
+      for (const GridNode& n : graph.Nodes())
       {
-        EntityPtr child = childNode->OwnerEntity();
-        if (child == nullptr || child->GetNameVal() == "BridgeNode")
-        {
-          continue;
-        }
+        String key = RoundKey(n.center.x) + "," + RoundKey(n.center.z);
 
-        // Some editor delete paths remove the entity from the scene without
-        // orphaning its node, and the undo stack keeps it alive. Treat it as
-        // gone so the signature changes and the bridges get rebuilt.
-        if (child->m_scene.expired())
-        {
-          continue;
-        }
+        String entry = key;
+        entry += "|";
+        entry += n.xm ? "L" : ".";
+        entry += n.xp ? "R" : ".";
+        entry += n.zm ? "F" : ".";
+        entry += n.zp ? "B" : ".";
 
-        EntityPtr tile = GetTileDataEntity(child);
-        if (tile != nullptr)
-        {
-          Vec3 pos = child->m_node->GetTranslation(TransformationSpace::TS_WORLD);
-          String key = RoundKey(pos.x) + "," + RoundKey(pos.z);
-
-          String entry = key;
-          entry += "|";
-          entry += ReadTileConnection(tile, "X-") ? "L" : ".";
-          entry += ReadTileConnection(tile, "X+") ? "R" : ".";
-          entry += ReadTileConnection(tile, "Z-") ? "F" : ".";
-          entry += ReadTileConnection(tile, "Z+") ? "B" : ".";
-
-          entries[key] = entry;
-        }
+        entries[key] = entry;
       }
 
       String sig = std::to_string(entries.size());
@@ -461,7 +401,7 @@ namespace ToolKit
       return sig;
     }
 
-    void BricksEditor::UpdateBridges()
+    void GridEditor::UpdateBridges()
     {
       App* app = GetApp();
       if (app == nullptr || app->m_gameMod != GameMod::Stop)
@@ -528,7 +468,7 @@ namespace ToolKit
       }
     }
 
-    void BricksEditor::RebuildBridges(EntityPtr gridNode)
+    void GridEditor::RebuildBridges(EntityPtr gridNode)
     {
       EditorScenePtr scene = GetApp()->GetCurrentScene();
       if (scene == nullptr)
@@ -578,57 +518,12 @@ namespace ToolKit
       }
       scene->RemoveEntity(oldBridges, true);
 
-      // Collect the connection state of every tile.
-      struct Tile
-      {
-        Vec3 center;    // World position of the tile center at its top surface.
-        Vec3 size;      // Tile extent (AABB max-min).
-        bool left, right, front, back;
-        EntityPtr entity; // Owning entity (to write reciprocal custom data).
-      };
-
-      std::vector<Tile> tiles;
-      for (Node* childNode : gridNode->m_node->m_children)
-      {
-        EntityPtr child = childNode->OwnerEntity();
-        if (child == nullptr || child->GetNameVal() == "BridgeNode")
-        {
-          continue;
-        }
-
-        // Same guard as ComputeGridSignature: ignore lingering removed entities.
-        if (child->m_scene.expired())
-        {
-          continue;
-        }
-
-        EntityPtr tile = GetTileDataEntity(child);
-        if (tile != nullptr)
-        {
-          const BoundingBox& bb = child->GetBoundingBox();
-          Vec3 pos              = child->m_node->GetTranslation(TransformationSpace::TS_WORLD);
-
-          Tile t;
-          t.center.x = pos.x + (bb.min.x + bb.max.x) * 0.5f;
-          t.center.y = pos.y + bb.max.y;
-          t.center.z = pos.z + (bb.min.z + bb.max.z) * 0.5f;
-          t.size     = bb.max - bb.min;
-          t.left     = ReadTileConnection(tile, "X-");
-          t.right    = ReadTileConnection(tile, "X+");
-          t.front    = ReadTileConnection(tile, "Z-");
-          t.back     = ReadTileConnection(tile, "Z+");
-          t.entity   = child;
-          tiles.push_back(t);
-        }
-      }
+      // Model the grid from the tiles' connection custom data. This is the
+      // single source the reciprocal sync and bridge building below read from.
+      GridGraph graph;
+      graph.LoadFromScene(gridNode);
 
       auto cellKey = [](const Vec3& c) { return RoundKey(c.x) + "," + RoundKey(c.z); };
-
-      std::unordered_map<String, size_t> tileIndex;
-      for (size_t i = 0; i < tiles.size(); ++i)
-      {
-        tileIndex[cellKey(tiles[i].center)] = i;
-      }
 
       // ---- Reciprocal flag sync ---------------------------------------------
       // The user edits a single checkbox (say a tile's X- side). Mirror that
@@ -636,14 +531,14 @@ namespace ToolKit
       // data stays symmetric: turning one side off (or on) updates both tiles
       // in one action.
       std::map<String, TileFlags> current;
-      for (size_t i = 0; i < tiles.size(); ++i)
+      for (const GridNode& n : graph.Nodes())
       {
         TileFlags f;
-        f.left   = tiles[i].left;
-        f.right  = tiles[i].right;
-        f.front  = tiles[i].front;
-        f.back   = tiles[i].back;
-        current[cellKey(tiles[i].center)] = f;
+        f.left  = n.xm;
+        f.right = n.xp;
+        f.front = n.zm;
+        f.back  = n.zp;
+        current[cellKey(n.center)] = f;
       }
 
       ObjectId gridId = gridNode->GetIdVal();
@@ -656,80 +551,37 @@ namespace ToolKit
       {
         const std::map<String, TileFlags>& stored = storedIt->second;
 
-        // Mirrors a changed flag onto the facing flag of the neighbour tile.
-        auto syncNeighbour = [&](const Tile& t, char dir, bool value)
+        // A changed flag is mirrored onto the facing flag of the neighbour
+        // node; GridGraph::Mirror also writes the neighbour's tile custom data,
+        // so the scene stays in sync with the graph.
+        for (GridNode& n : graph.Nodes())
         {
-          Vec3 offset;
-          switch (dir)
-          {
-            case 'L': offset = Vec3(-t.size.x, 0.0f, 0.0f); break;
-            case 'R': offset = Vec3(t.size.x, 0.0f, 0.0f); break;
-            case 'F': offset = Vec3(0.0f, 0.0f, -t.size.z); break;
-            case 'B': offset = Vec3(0.0f, 0.0f, t.size.z); break;
-          }
-
-          String nbKey = cellKey(t.center + offset);
-          auto it      = tileIndex.find(nbKey);
-          if (it == tileIndex.end())
-          {
-            return; // No tile in that direction.
-          }
-
-          Tile& nb    = tiles[it->second];
-          String recipName;
-          bool* recip = nullptr;
-          switch (dir)
-          {
-            case 'L': recipName = "X+";  recip = &nb.right; break;
-            case 'R': recipName = "X-";  recip = &nb.left;  break;
-            case 'F': recipName = "Z+";  recip = &nb.back;  break;
-            default:  recipName = "Z-";  recip = &nb.front; break;
-          }
-
-          if (*recip == value)
-          {
-            return; // Already in sync.
-          }
-
-          // Write the reciprocal flag on the neighbour tile's custom data, the
-          // same way the editor's property panel does. Saved with the scene on
-          // the next save.
-          EntityPtr nbTile = GetTileDataEntity(nb.entity);
-          if (nbTile != nullptr)
-          {
-            ParameterVariant* var = nullptr;
-            if (nbTile->m_localData.LookUp(CustomDataCategory.Name, recipName, &var))
-            {
-              *var = value;
-            }
-          }
-
-          *recip = value; // Bridge building below uses the synced state.
-        };
-
-        for (const auto& [key, cur] : current)
-        {
+          String key     = cellKey(n.center);
           auto sit       = stored.find(key);
           TileFlags old  = sit != stored.end() ? sit->second : TileFlags();
-          if (cur.left   != old.left)  syncNeighbour(tiles[tileIndex[key]], 'L', cur.left);
-          if (cur.right  != old.right) syncNeighbour(tiles[tileIndex[key]], 'R', cur.right);
-          if (cur.front  != old.front) syncNeighbour(tiles[tileIndex[key]], 'F', cur.front);
-          if (cur.back   != old.back)  syncNeighbour(tiles[tileIndex[key]], 'B', cur.back);
+          if (n.xm != old.left)  graph.Mirror(n, GridDir::Xm);
+          if (n.xp != old.right) graph.Mirror(n, GridDir::Xp);
+          if (n.zm != old.front) graph.Mirror(n, GridDir::Zm);
+          if (n.zp != old.back)  graph.Mirror(n, GridDir::Zp);
         }
       }
 
-      // Store the post-sync snapshot so the next frame's diff starts from
-      // reality (the propagation above may have changed neighbour flags).
-      for (size_t i = 0; i < tiles.size(); ++i)
+      // Persist the synced flags back to the tiles, then store the post-sync
+      // snapshot so the next frame's diff starts from reality (the propagation
+      // above may have changed neighbour flags).
+      graph.WriteToScene();
+
+      std::map<String, TileFlags> postSync;
+      for (const GridNode& n : graph.Nodes())
       {
         TileFlags f;
-        f.left   = tiles[i].left;
-        f.right  = tiles[i].right;
-        f.front  = tiles[i].front;
-        f.back   = tiles[i].back;
-        current[cellKey(tiles[i].center)] = f;
+        f.left  = n.xm;
+        f.right = n.xp;
+        f.front = n.zm;
+        f.back  = n.zp;
+        postSync[cellKey(n.center)] = f;
       }
-      m_tileFlags[gridId] = current;
+      m_tileFlags[gridId] = postSync;
 
       // A bridge is a quad laid flat on the tile tops (rotated -90 degrees
       // about X), centered on the midpoint of the two tile centers and scaled
@@ -738,7 +590,7 @@ namespace ToolKit
       // the tile centers, so it never pokes past the neighbour.
       std::set<String> placedMidpoints;
 
-      auto createBridge = [&](const Tile& a, const Tile& b, bool alongX)
+      auto createBridge = [&](const GridNode& a, const GridNode& b, bool alongX)
       {
         Vec3 mid     = (a.center + b.center) * 0.5f;
         mid.y        = (a.center.y > b.center.y ? a.center.y : b.center.y) + g_bridgeLift;
@@ -746,7 +598,7 @@ namespace ToolKit
         String key = RoundKey(mid.x) + "," + RoundKey(mid.z);
         if (!placedMidpoints.insert(key).second)
         {
-          return; // The same bridge was already created from the other tile.
+          return; // The same bridge was already created from the other node.
         }
 
         QuadPtr quad = MakeNewPtr<Quad>();
@@ -756,8 +608,8 @@ namespace ToolKit
         quad->m_node->SetTranslation(mid, TransformationSpace::TS_WORLD);
         quad->m_node->SetOrientation(glm::angleAxis(glm::radians(-90.0f), X_AXIS), TransformationSpace::TS_WORLD);
 
-        // The bridge spans tile center to tile center along one axis and is a
-        // slim strip across the other: its width is 5% of the tile's extent on
+        // The bridge spans node center to node center along one axis and is a
+        // slim strip across the other: its width is 5% of the node's extent on
         // that cross axis.
         float cross     = alongX ? a.size.z : a.size.x;
         float thickness = cross * g_bridgeThicknessRatio;
@@ -770,68 +622,48 @@ namespace ToolKit
         bridgeNode->m_node->AddChild(quad->m_node, true);
       };
 
-      // A bridge connects two tiles only when BOTH sides flag the facing
-      // connection (AND). Otherwise toggling a tile's flag off would not remove
+      // A bridge connects two nodes only when BOTH sides flag the facing
+      // connection (AND). Otherwise toggling a node's flag off would not remove
       // the bridge at that location, because the neighbour's reciprocal flag
       // would still emit it. The midpoint dedup still collapses the two
-      // symmetric attempts (this tile and the neighbour) into a single quad.
-      for (const Tile& t : tiles)
+      // symmetric attempts (this node and the neighbour) into a single quad.
+      for (GridNode& n : graph.Nodes())
       {
-        if (t.left)
+        if (GridNode* nb = graph.Neighbor(n, GridDir::Xm))
         {
-          Vec3 n = t.center + Vec3(-t.size.x, 0.0f, 0.0f);
-          if (auto it = tileIndex.find(cellKey(n)); it != tileIndex.end())
+          if (graph.Connected(n, *nb)) // The neighbour must face back toward n.
           {
-            const Tile& nb = tiles[it->second];
-            if (nb.right) // The neighbour must face back toward this tile.
-            {
-              createBridge(t, nb, true);
-            }
+            createBridge(n, *nb, true);
           }
         }
 
-        if (t.right)
+        if (GridNode* nb = graph.Neighbor(n, GridDir::Xp))
         {
-          Vec3 n = t.center + Vec3(t.size.x, 0.0f, 0.0f);
-          if (auto it = tileIndex.find(cellKey(n)); it != tileIndex.end())
+          if (graph.Connected(n, *nb))
           {
-            const Tile& nb = tiles[it->second];
-            if (nb.left)
-            {
-              createBridge(t, nb, true);
-            }
+            createBridge(n, *nb, true);
           }
         }
 
-        if (t.front) // Front faces -Z.
+        if (GridNode* nb = graph.Neighbor(n, GridDir::Zm)) // Front faces -Z.
         {
-          Vec3 n = t.center + Vec3(0.0f, 0.0f, -t.size.z);
-          if (auto it = tileIndex.find(cellKey(n)); it != tileIndex.end())
+          if (graph.Connected(n, *nb))
           {
-            const Tile& nb = tiles[it->second];
-            if (nb.back)
-            {
-              createBridge(t, nb, false);
-            }
+            createBridge(n, *nb, false);
           }
         }
 
-        if (t.back) // Back faces +Z.
+        if (GridNode* nb = graph.Neighbor(n, GridDir::Zp)) // Back faces +Z.
         {
-          Vec3 n = t.center + Vec3(0.0f, 0.0f, t.size.z);
-          if (auto it = tileIndex.find(cellKey(n)); it != tileIndex.end())
+          if (graph.Connected(n, *nb))
           {
-            const Tile& nb = tiles[it->second];
-            if (nb.front)
-            {
-              createBridge(t, nb, false);
-            }
+            createBridge(n, *nb, false);
           }
         }
       }
     }
 
-    void BricksEditor::SaveSettings()
+    void GridEditor::SaveSettings()
     {
       App* app = GetApp();
       if (app == nullptr || app->m_workspace == nullptr)
@@ -842,18 +674,18 @@ namespace ToolKit
       String cfgDir = app->m_workspace->GetConfigDirectory();
       std::filesystem::create_directories(cfgDir);
 
-      String path = ConcatPaths({cfgDir, "BricksEditor.settings"});
+      String path = ConcatPaths({cfgDir, "GridEditor.settings"});
 
       std::ofstream file;
       file.open(path.c_str(), std::ios::out | std::ios::trunc);
       if (!file.is_open())
       {
-        TK_ERR("BricksEditor: Can't open settings file for writing: %s", path.c_str());
+        TK_ERR("GridEditor: Can't open settings file for writing: %s", path.c_str());
         return;
       }
 
       XmlDocumentPtr doc = MakeNewPtr<XmlDocument>();
-      XmlNode* root      = CreateXmlNode(doc.get(), "BricksEditor");
+      XmlNode* root      = CreateXmlNode(doc.get(), "GridEditor");
 
       // Serialize the whole window, TKParams included, using the same path the
       // editor uses for its own windows.
@@ -866,7 +698,7 @@ namespace ToolKit
       doc->clear();
     }
 
-    void BricksEditor::LoadSettings()
+    void GridEditor::LoadSettings()
     {
       App* app = GetApp();
       if (app == nullptr || app->m_workspace == nullptr)
@@ -874,7 +706,7 @@ namespace ToolKit
         return;
       }
 
-      String path = ConcatPaths({app->m_workspace->GetConfigDirectory(), "BricksEditor.settings"});
+      String path = ConcatPaths({app->m_workspace->GetConfigDirectory(), "GridEditor.settings"});
       if (!CheckFile(path))
       {
         return;
@@ -888,7 +720,7 @@ namespace ToolKit
       info.File     = path;
       info.Document = doc.get();
 
-      if (XmlNode* root = doc->first_node("BricksEditor"))
+      if (XmlNode* root = doc->first_node("GridEditor"))
       {
         const char* xmlRootObject = Object::StaticClass()->Name.c_str();
         if (XmlNode* objNode = root->first_node(xmlRootObject))
@@ -908,7 +740,7 @@ namespace ToolKit
       }
     }
 
-    void BricksEditor::Show()
+    void GridEditor::Show()
     {
       ImGui::SetNextWindowSize(ImVec2(340, 440), ImGuiCond_Once);
       if (ImGui::Begin(m_name.c_str(), &m_visible))
@@ -965,13 +797,11 @@ namespace ToolKit
               MaterialPtr lightMat = GetOrCreateCheckerMaterial(false);
               MaterialPtr darkMat  = GetOrCreateCheckerMaterial(true);
 
-              // Master group: an empty entity that parents every placed tile,
-              // keeping the outliner organized.
-              EntityPtr master = MakeNewPtr<Entity>();
-              master->SetNameVal("GridNode");
-              master->m_node->SetTranslation(cursorPos, TransformationSpace::TS_WORLD);
-              scene->AddEntity(master);
-
+              // Model the grid first, independently of the scene: an N x M set
+              // of nodes on the lattice, all four sides connected. The tiles
+              // are created from the nodes below and the connection state is
+              // written to them through the graph.
+              GridGraph graph;
               float originX = floorf(cursorPos.x / D) * D;
               float originZ = floorf(cursorPos.z / D) * D;
 
@@ -979,31 +809,46 @@ namespace ToolKit
               {
                 for (int ix = 0; ix < N; ++ix)
                 {
-                  const bool darkTile = ((ix + iz) % 2) == 1;
-
-                  CubePtr cube = MakeNewPtr<Cube>();
-                  cube->SetNameVal("Tile_" + std::to_string(ix) + "x" + std::to_string(iz));
-                  // Re-generates the cube geometry at the tile size. The cube
-                  // rests on the ground plane when centered at half its height.
-                  cube->SetCubeScaleVal(Vec3(D, g_tileHeight, D));
-                  cube->GetMeshComponent()->Init(false);
-                  cube->GetMaterialComponent()->SetFirstMaterial(darkTile ? darkMat : lightMat);
-
-                  Vec3 pos(originX + ix * D, g_tileHeight * 0.5f, originZ + iz * D);
-                  cube->m_node->SetTranslation(pos, TransformationSpace::TS_WORLD);
-
-                  scene->AddEntity(cube);
-                  master->m_node->AddChild(cube->m_node, true);
-
-                  // Auto-set the connection custom data so the tile is self
-                  // contained (bridges work without a prefab author). Default
-                  // to all sides connected: a fresh grid is fully bridged.
-                  SetTileConnection(cube, "X-", true);
-                  SetTileConnection(cube, "X+", true);
-                  SetTileConnection(cube, "Z-", true);
-                  SetTileConnection(cube, "Z+", true);
+                  GridNode n;
+                  n.ix     = ix;
+                  n.iz     = iz;
+                  n.center = Vec3(originX + ix * D, g_tileHeight, originZ + iz * D); // Tile top-center.
+                  n.size   = Vec3(D, g_tileHeight, D);
+                  n.xm = n.xp = n.zm = n.zp = true; // A fresh grid is fully bridged.
+                  graph.Nodes().push_back(n);
                 }
               }
+
+              // Master group: an empty entity that parents every placed tile,
+              // keeping the outliner organized.
+              EntityPtr master = MakeNewPtr<Entity>();
+              master->SetNameVal("GridNode");
+              master->m_node->SetTranslation(cursorPos, TransformationSpace::TS_WORLD);
+              scene->AddEntity(master);
+
+              for (GridNode& n : graph.Nodes())
+              {
+                const bool darkTile = ((n.ix + n.iz) % 2) == 1;
+
+                CubePtr cube = MakeNewPtr<Cube>();
+                cube->SetNameVal("Tile_" + std::to_string(n.ix) + "x" + std::to_string(n.iz));
+                // Re-generates the cube geometry at the tile size. The cube
+                // rests on the ground plane when centered at half its height.
+                cube->SetCubeScaleVal(Vec3(D, g_tileHeight, D));
+                cube->GetMeshComponent()->Init(false);
+                cube->GetMaterialComponent()->SetFirstMaterial(darkTile ? darkMat : lightMat);
+
+                Vec3 pos(n.center.x, g_tileHeight * 0.5f, n.center.z);
+                cube->m_node->SetTranslation(pos, TransformationSpace::TS_WORLD);
+
+                scene->AddEntity(cube);
+                master->m_node->AddChild(cube->m_node, true);
+                n.tile = cube;
+              }
+
+              // Auto-set the connection custom data so each tile is self
+              // contained (bridges work without a prefab author).
+              graph.WriteToScene();
             }
           }
         }
@@ -1070,10 +915,10 @@ namespace ToolKit
         // object's facing; otherwise it holds the persisted direction for the
         // next Place.
         ImGui::Spacing();
-        ImGui::PushID("BricksPlacementCompass");
+        ImGui::PushID("GridPlacementCompass");
         const int startDir = onPlaced ? FacingDir(sel) : GetPlacementDirVal();
         int dir            = startDir;
-        if (ImGui::BeginTable("##BricksPlacementCompass", 3))
+        if (ImGui::BeginTable("##GridPlacementCompass", 3))
         {
           ImGui::TableNextRow();
           ImGui::TableNextColumn();

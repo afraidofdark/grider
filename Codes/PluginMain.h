@@ -10,7 +10,7 @@
 #include <Plugin.h>
 #include <ToolKit.h>
 
-#include "BricksEditor.h"
+#include "GridEditor.h"
 
 namespace ToolKit
 {

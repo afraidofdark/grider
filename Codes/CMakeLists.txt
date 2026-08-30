@@ -87,10 +87,10 @@ message("Compiling ${PLUGIN_PROJECT_NAME} with ${TK_COMPILER} for platform ${TK_
 # --------------------------------------------------------------------------- #
 # Plugin target.
 # --------------------------------------------------------------------------- #
-set(HEADERS PluginMain.h BricksEditor.h)
+set(HEADERS PluginMain.h GridEditor.h GridGraph.h)
 
 set(CMAKE_DEBUG_POSTFIX d) # Matches TK_PLUGIN_DEBUG_EXT ("d.so" / "d.dll").
-add_library(${PLUGIN_PROJECT_NAME} SHARED PluginMain.cpp BricksEditor.cpp ${HEADERS})
+add_library(${PLUGIN_PROJECT_NAME} SHARED PluginMain.cpp GridEditor.cpp GridGraph.cpp ${HEADERS})
 
 # The editor loads the plugin name verbatim -- strip the default "lib" prefix.
 set_target_properties(${PLUGIN_PROJECT_NAME} PROPERTIES PREFIX "")
