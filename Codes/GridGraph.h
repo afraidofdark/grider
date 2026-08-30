@@ -14,8 +14,6 @@
 
 namespace ToolKit
 {
-  namespace Editor
-  {
 
     // Axis direction a node connects to its neighbour. Mirrors the grid axis
     // convention used by the editor (Left=-X, Right=+X, Front=-Z, Back=+Z).
@@ -87,6 +85,17 @@ namespace ToolKit
       // a passage exists only when both sides agree).
       bool Connected(const GridNode& a, const GridNode& b) const;
 
+      // Node whose tile footprint contains the world position (x/z), or null
+      // when the point is outside every tile. Unlike NodeAt (exact center
+      // match), this resolves points that land anywhere on a tile -- the query
+      // used to pick the tile under a mouse click.
+      GridNode* NodeAtPoint(const Vec3& worldPos);
+      const GridNode* NodeAtPoint(const Vec3& worldPos) const;
+
+      // Height of the tile tops; the plane a pick ray intersects before
+      // NodeAtPoint resolves the tile underneath.
+      float TopPlaneY() const;
+
       // Syncs the reciprocal flag on the neighbour across n's side d: the
       // neighbour's facing side is set to the same value n carries, so turning
       // one side on/off updates both tiles in one action. Returns the neighbour
@@ -107,5 +116,4 @@ namespace ToolKit
       std::unordered_map<String, size_t> m_index; // RoundKey(center) -> node.
     };
 
-  } // namespace Editor
 } // namespace ToolKit

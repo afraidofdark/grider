@@ -15,11 +15,8 @@
 
 namespace ToolKit
 {
-  namespace Editor
+  namespace
   {
-
-    namespace
-    {
       // Rounds a float to millimetre precision for stable spatial keys.
       String RoundKey(float v)
       {
@@ -276,5 +273,37 @@ namespace ToolKit
       return nb;
     }
 
-  } // namespace Editor
+    GridNode* GridGraph::NodeAtPoint(const Vec3& worldPos)
+    {
+      // The tile whose footprint covers the point: center +/- half extent on the
+      // XZ plane. Points outside every tile (e.g. bridges, gaps) resolve to null.
+      for (GridNode& n : m_nodes)
+      {
+        float hx = n.size.x * 0.5f;
+        float hz = n.size.z * 0.5f;
+        if (worldPos.x >= n.center.x - hx && worldPos.x <= n.center.x + hx && worldPos.z >= n.center.z - hz &&
+            worldPos.z <= n.center.z + hz)
+        {
+          return &n;
+        }
+      }
+
+      return nullptr;
+    }
+
+    const GridNode* GridGraph::NodeAtPoint(const Vec3& worldPos) const
+    {
+      return const_cast<GridGraph*>(this)->NodeAtPoint(worldPos);
+    }
+
+    float GridGraph::TopPlaneY() const
+    {
+      if (m_nodes.empty())
+      {
+        return 0.0f;
+      }
+
+      return m_nodes[0].center.y;
+    }
+
 } // namespace ToolKit
