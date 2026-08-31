@@ -208,6 +208,7 @@ namespace ToolKit
       // exposed as editable properties (they live in the window UI only).
       ActiveSlot_Define(0, "Placement", 0, false, false);
       PlacementDir_Define(PlacementDirZm, "Placement", 0, false, false);
+      TileExtendDir_Define(PlacementDirZm, "Placement", 0, false, false);
     }
 
     float GridEditor::PlacementYaw(int dir) const
@@ -417,6 +418,159 @@ namespace ToolKit
       // Y-axis turn spins it in place without moving it.
       float yaw = PlacementYaw(dir);
       obj->m_node->SetOrientation(glm::angleAxis(glm::radians(yaw), Y_AXIS), TransformationSpace::TS_WORLD);
+    }
+
+    void GridEditor::DrawPlacementCompass(int& dir, bool canPlace, const std::function<void()>& onPlace, const char* id)
+    {
+      ImGui::PushID(id);
+
+      const float availW  = ImGui::GetContentRegionAvail().x;
+      const float spacing = ImGui::GetStyle().ItemSpacing.x;
+      const float radioW  = ImGui::GetFrameHeight(); // Radio circle + padding footprint.
+
+      // Z+
+      const float zPlusW = ImGui::CalcTextSize("Z+").x + radioW;
+      ImGui::SetCursorPosX((availW - zPlusW) * 0.5f);
+      ImGui::RadioButton("Z+", &dir, PlacementDirZp);
+
+      // Blank row after Z+.
+      ImGui::Dummy(ImVec2(0, 8));
+
+      // X- [Place] X+: all three next to each other, centered.
+      const float placeW = 64.0f;
+      const float groupW = (ImGui::CalcTextSize("X-").x + radioW) + spacing + placeW + spacing +
+                           (ImGui::CalcTextSize("X+").x + radioW);
+      ImGui::SetCursorPosX((availW - groupW) * 0.5f);
+      ImGui::RadioButton("X-", &dir, PlacementDirXm);
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!canPlace);
+      if (ImGui::Button("Place", ImVec2(placeW, 0)))
+      {
+        if (onPlace)
+        {
+          onPlace();
+        }
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::RadioButton("X+", &dir, PlacementDirXp);
+
+      // Blank row after the Place row.
+      ImGui::Dummy(ImVec2(0, 8));
+
+      // Z-
+      const float zMinusW = ImGui::CalcTextSize("Z-").x + radioW;
+      ImGui::SetCursorPosX((availW - zMinusW) * 0.5f);
+      ImGui::RadioButton("Z-", &dir, PlacementDirZm);
+
+      ImGui::PopID();
+    }
+
+    void GridEditor::ExtendTileFrom(const EntityPtr& tile, int dir)
+    {
+      App* app = GetApp();
+      if (app == nullptr)
+      {
+        return;
+      }
+
+      EditorScenePtr scene = app->GetCurrentScene();
+      if (scene == nullptr || tile == nullptr || !IsTile(tile))
+      {
+        app->SetStatusMsg(g_statusFailed);
+        return;
+      }
+
+      EntityPtr gridNode = tile->Parent();
+      if (gridNode == nullptr)
+      {
+        app->SetStatusMsg(g_statusFailed);
+        return;
+      }
+
+      // Map the compass direction to the graph axis.
+      GridDir gd;
+      switch (dir)
+      {
+        case PlacementDirXp: gd = GridDir::Xp; break;
+        case PlacementDirXm: gd = GridDir::Xm; break;
+        case PlacementDirZp: gd = GridDir::Zp; break;
+        default:             gd = GridDir::Zm; break;
+      }
+
+      GridGraph graph;
+      graph.LoadFromScene(gridNode);
+
+      GridNode* selNode = graph.NodeAtPoint(GetTileTopCenter(tile));
+      if (selNode == nullptr)
+      {
+        app->SetStatusMsg(g_statusFailed);
+        return;
+      }
+
+      // The neighbour cell must be free: there is no tile in that direction.
+      if (graph.Neighbor(*selNode, gd) != nullptr)
+      {
+        app->SetStatusMsg(g_statusFailed);
+        return;
+      }
+
+      // Neighbour centre on the lattice.
+      int dx = 0, dz = 0;
+      Vec3 offset(0.0f);
+      switch (gd)
+      {
+        case GridDir::Xm: dx = -1; offset.x = -selNode->size.x; break;
+        case GridDir::Xp: dx =  1; offset.x =  selNode->size.x; break;
+        case GridDir::Zm: dz = -1; offset.z = -selNode->size.z; break;
+        default:          dz =  1; offset.z =  selNode->size.z; break;
+      }
+      const Vec3 nbrCenter = selNode->center + offset;
+
+      // Checker material: the opposite of the selected tile's.
+      MaterialPtr darkMat  = GetOrCreateCheckerMaterial(true);
+      MaterialPtr lightMat = GetOrCreateCheckerMaterial(false);
+      MaterialPtr selMat   = tile->GetMaterialComponent()->GetFirstMaterial();
+      MaterialPtr newMat   = (selMat == darkMat) ? lightMat : darkMat;
+
+      CubePtr cube = MakeNewPtr<Cube>();
+      cube->SetNameVal("Tile_" + std::to_string(selNode->ix + dx) + "x" + std::to_string(selNode->iz + dz));
+      cube->SetCubeScaleVal(Vec3(selNode->size.x, g_tileHeight, selNode->size.z));
+      cube->GetMeshComponent()->Init(false);
+      cube->GetMaterialComponent()->SetFirstMaterial(newMat);
+
+      Vec3 pos(nbrCenter.x, g_tileHeight * 0.5f, nbrCenter.z);
+      cube->m_node->SetTranslation(pos, TransformationSpace::TS_WORLD);
+
+      scene->AddEntity(cube);
+      gridNode->m_node->AddChild(cube->m_node, true);
+
+      // The freshly extended tile becomes the selection, so the grid can be
+      // grown further tile by tile.
+      scene->AddToSelection(cube->GetIdVal(), false);
+
+      // Connect the new tile to the selected one: both facing sides open, so
+      // the bridge between them rebuilds. Flags are set before Nodes() grows
+      // (reallocation would invalidate selNode).
+      GridNode n;
+      n.ix     = selNode->ix + dx;
+      n.iz     = selNode->iz + dz;
+      n.center = nbrCenter;
+      n.size   = selNode->size;
+      n.tile   = cube;
+
+      switch (gd)
+      {
+        case GridDir::Xp: selNode->xp = true; n.xm = true; break;
+        case GridDir::Xm: selNode->xm = true; n.xp = true; break;
+        case GridDir::Zp: selNode->zp = true; n.zm = true; break;
+        default:          selNode->zm = true; n.zp = true; break;
+      }
+
+      graph.Nodes().push_back(n);
+      graph.WriteToScene();
+
+      app->SetStatusMsg("Tile extended.");
     }
 
     MaterialPtr GridEditor::GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color)
@@ -881,6 +1035,15 @@ namespace ToolKit
       {
         HandleStates();
 
+        // Current selection state, used by both the Tile Extend and the
+        // Placement sections. A tile is a placement / extension target; a
+        // placed object (parented under a tile) can have its direction
+        // re-aligned live. Re-derived every frame so the UI can't go stale.
+        EditorScenePtr scene = GetApp() ? GetApp()->GetCurrentScene() : nullptr;
+        EntityPtr sel        = scene ? scene->GetCurrentSelection() : nullptr;
+        const bool onTile    = IsTile(sel);
+        const bool onPlaced  = IsPlacedObject(sel);
+
         // ---- Tile geometry -------------------------------------------------
         ImGui::SeparatorText("Tile");
 
@@ -987,14 +1150,101 @@ namespace ToolKit
           }
         }
 
-        // ---- Placement -------------------------------------------------------
+        // ---- Tile Extend -----------------------------------------------------
+        // Extends the grid one tile at a time: select a tile, pick a compass
+        // direction and press Place. The neighbour cell is filled when free;
+        // otherwise the operation fails with a status message.
         ImGui::Spacing();
-        ImGui::SeparatorText("Placement");
+        ImGui::SeparatorText("Tile Extend");
 
-        // The placement panel is a grid of areas ("dropzones"), each holding
-        // one asset. Exactly one empty area is kept at the end as the next
-        // area's slot: once it receives a drop, a new empty one is appended.
-        // The empty placeholder has no name; the UI shows it as "<Empty>".
+        if (onTile)
+        {
+          ImGui::Text("Selected tile: %s", sel->GetNameVal().c_str());
+        }
+        else
+        {
+          ImGui::TextDisabled("Select a tile to extend the grid.");
+        }
+
+        const int extendStartDir = GetTileExtendDirVal();
+        int extendDir            = extendStartDir;
+        DrawPlacementCompass(
+            extendDir,
+            onTile,
+            [this, sel, extendDir]() -> void
+            {
+              ExtendTileFrom(sel, extendDir);
+            },
+            "TileExtendCompass");
+
+        if (extendDir != extendStartDir)
+        {
+          SetTileExtendDirVal(extendDir);
+          SaveSettings();
+        }
+
+        // Connections of the selected tile. Toggling a side mirrors the
+        // reciprocal flag on the neighbour tile: a connection exists only when
+        // both tiles face each other, so a bridge appears/disappears on both.
+        if (onTile)
+        {
+          EntityPtr gridNode = sel->Parent();
+          if (gridNode != nullptr)
+          {
+            GridGraph graph;
+            graph.LoadFromScene(gridNode);
+
+            if (GridNode* selNode = graph.NodeAtPoint(GetTileTopCenter(sel)))
+            {
+              bool xm = selNode->xm;
+              bool xp = selNode->xp;
+              bool zm = selNode->zm;
+              bool zp = selNode->zp;
+
+              // Scoped so the checkbox ids don't clash with the compass radios
+              // above (they use the same X-/X+/Z-/Z+ labels).
+              ImGui::PushID("TileConnections");
+              ImGui::Text("connections:");
+              ImGui::SameLine();
+              if (ImGui::Checkbox("X-", &xm))
+              {
+                selNode->xm = xm;
+                graph.Mirror(*selNode, GridDir::Xm);
+                graph.WriteToScene();
+              }
+              ImGui::SameLine();
+              if (ImGui::Checkbox("X+", &xp))
+              {
+                selNode->xp = xp;
+                graph.Mirror(*selNode, GridDir::Xp);
+                graph.WriteToScene();
+              }
+              ImGui::SameLine();
+              if (ImGui::Checkbox("Z-", &zm))
+              {
+                selNode->zm = zm;
+                graph.Mirror(*selNode, GridDir::Zm);
+                graph.WriteToScene();
+              }
+              ImGui::SameLine();
+              if (ImGui::Checkbox("Z+", &zp))
+              {
+                selNode->zp = zp;
+                graph.Mirror(*selNode, GridDir::Zp);
+                graph.WriteToScene();
+              }
+              ImGui::PopID();
+            }
+          }
+        }
+
+        // ---- Object List -----------------------------------------------------
+        // The placement areas ("dropzones"), each holding one asset. Exactly
+        // one empty area is kept at the end as the next area's slot: once it
+        // receives a drop, a new empty one is appended. The empty placeholder
+        // has no name; the UI shows it as "<Empty>".
+        ImGui::Spacing();
+        ImGui::SeparatorText("Object List");
         if (m_slots.empty() || !m_slots.back().absPath.empty())
         {
           m_slots.push_back(PlacementSlot());
@@ -1172,14 +1422,12 @@ namespace ToolKit
         }
         ImGui::EndDisabled();
 
-        // What the placement section acts on this frame. A tile is a placement
-        // target (Place drops a new object onto it); a placed object (parented
-        // under a tile) can have its direction re-aligned live. The mode is
-        // re-derived from the selection every frame, so the UI can't go stale.
-        EditorScenePtr scene = GetApp() ? GetApp()->GetCurrentScene() : nullptr;
-        EntityPtr sel        = scene ? scene->GetCurrentSelection() : nullptr;
-        const bool onTile    = IsTile(sel);
-        const bool onPlaced  = IsPlacedObject(sel);
+        // ---- Object Placement ------------------------------------------------
+        // The placement component: pick an area (from the Object List) and a
+        // compass direction, then press Place. When a placed object is
+        // selected, the compass radios re-align it instead.
+        ImGui::Spacing();
+        ImGui::SeparatorText("Object Placement");
 
         ImGui::Spacing();
         if (onPlaced)
@@ -1197,7 +1445,9 @@ namespace ToolKit
 
         // The active area drives Place: whatever asset it holds is placed.
         const int activeSlot = GetActiveSlotVal();
-        if (activeSlot >= 0 && activeSlot < (int) m_slots.size() && !m_slots[activeSlot].absPath.empty())
+        const bool hasAsset =
+            activeSlot >= 0 && activeSlot < (int) m_slots.size() && !m_slots[activeSlot].absPath.empty();
+        if (hasAsset)
         {
           const PlacementSlot& active = m_slots[activeSlot];
           ImGui::Text("Place: %s (%s)", active.name.c_str(), active.fileName.c_str());
@@ -1207,66 +1457,21 @@ namespace ToolKit
           ImGui::TextDisabled("Select an area that holds an asset to place.");
         }
 
-        // Compass: Z+ above, X- [Place] X+ grouped in the middle, Z- below.
-        // Everything is centered; blank rows separate Z+ and the Place row.
-        // Matches the grid axis convention (Left=-X, Right=+X, Front=-Z).
-        // When a placed object is selected the compass shows (and edits) that
+        // Compass: when a placed object is selected it shows (and edits) that
         // object's facing; otherwise it holds the persisted direction for the
         // next Place.
         ImGui::Spacing();
-        ImGui::PushID("GridPlacementCompass");
         const int startDir = onPlaced ? FacingDir(sel) : GetPlacementDirVal();
         int dir            = startDir;
-        const float availW = ImGui::GetContentRegionAvail().x;
-        const float spacing = ImGui::GetStyle().ItemSpacing.x;
-        const float radioW  = ImGui::GetFrameHeight(); // Radio circle + padding footprint.
-
-        // Z+
-        const float zPlusW = ImGui::CalcTextSize("Z+").x + radioW;
-        ImGui::SetCursorPosX((availW - zPlusW) * 0.5f);
-        ImGui::RadioButton("Z+", &dir, PlacementDirZp);
-
-        // Blank row after Z+.
-        ImGui::Dummy(ImVec2(0, 8));
-
-        // X- [Place] X+: all three next to each other, centered.
-        const float placeW = 64.0f;
-        const float groupW = (ImGui::CalcTextSize("X-").x + radioW) + spacing + placeW + spacing +
-                             (ImGui::CalcTextSize("X+").x + radioW);
-        ImGui::SetCursorPosX((availW - groupW) * 0.5f);
-        ImGui::RadioButton("X-", &dir, PlacementDirXm);
-        ImGui::SameLine();
-        if (onPlaced)
-        {
-          // A placed object is re-oriented by its compass radios directly.
-          ImGui::BeginDisabled();
-          ImGui::Button("Place", ImVec2(placeW, 0));
-          ImGui::EndDisabled();
-        }
-        else
-        {
-          // Place is active only when the selected area holds an asset.
-          const int activeSlot = GetActiveSlotVal();
-          const bool hasAsset  = activeSlot >= 0 && activeSlot < (int) m_slots.size() &&
-                                 !m_slots[activeSlot].absPath.empty();
-          ImGui::BeginDisabled(!hasAsset);
-          if (ImGui::Button("Place", ImVec2(placeW, 0)))
-          {
-            SetPlacementDirVal(dir);
-            PlaceObjectOnSelectedTile(m_slots[activeSlot]);
-          }
-          ImGui::EndDisabled();
-        }
-        ImGui::SameLine();
-        ImGui::RadioButton("X+", &dir, PlacementDirXp);
-
-        // Blank row after the Place row.
-        ImGui::Dummy(ImVec2(0, 8));
-
-        // Z-
-        const float zMinusW = ImGui::CalcTextSize("Z-").x + radioW;
-        ImGui::SetCursorPosX((availW - zMinusW) * 0.5f);
-        ImGui::RadioButton("Z-", &dir, PlacementDirZm);
+        DrawPlacementCompass(
+            dir,
+            !onPlaced && hasAsset,
+            [this, dir]() -> void
+            {
+              SetPlacementDirVal(dir);
+              PlaceObjectOnSelectedTile(m_slots[GetActiveSlotVal()]);
+            },
+            "GridPlacementCompass");
 
         // Apply a direction change: re-align the selected placed object, or
         // store the new default direction for the next Place.
@@ -1280,7 +1485,6 @@ namespace ToolKit
           SetPlacementDirVal(dir);
           SaveSettings();
         }
-        ImGui::PopID();
       }
       ImGui::End();
     }

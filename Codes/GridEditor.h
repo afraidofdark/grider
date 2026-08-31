@@ -14,6 +14,7 @@
 
 #include <Editor/UI/Window.h>
 
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -60,6 +61,10 @@ namespace ToolKit
       TKDeclareParam(int, ActiveSlot);
       // Selected compass direction of the placement tool (persisted).
       TKDeclareParam(int, PlacementDir);
+      // Selected compass direction of the tile-extend tool (persisted). Kept
+      // separate from PlacementDir so the two compasses don't affect each
+      // other.
+      TKDeclareParam(int, TileExtendDir);
 
       // One placement area: a dropzone that can hold a single asset. Areas are
       // shown as launcher-style cards in a grid; the selected card is removed
@@ -154,6 +159,16 @@ namespace ToolKit
       // re-anchors it on the tile it sits under (centered, base flush with the
       // tile top). Used to adjust a placement's direction after the fact.
       void ReorientPlacedObject(const EntityPtr& obj, int dir);
+
+      // Reusable direction compass (Z+, X- / [Place] / X+, Z-), centered in
+      // the window. The radios edit `dir`; the Place button is enabled only
+      // when `canPlace` and, when pressed, invokes `onPlace`. `id` scopes the
+      // ImGui widgets so the compass can be drawn multiple times in one window.
+      void DrawPlacementCompass(int& dir, bool canPlace, const std::function<void()>& onPlace, const char* id);
+
+      // Extends the grid by one tile from `tile` toward the given compass
+      // direction. Fails (status message) when that cell is already occupied.
+      void ExtendTileFrom(const EntityPtr& tile, int dir);
 
       // Snapshot of a single tile's connection flags. Kept per GridNode so the
       // plugin can tell which flag a user edited and mirror the reciprocal flag
