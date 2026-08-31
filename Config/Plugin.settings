@@ -1,5 +1,6 @@
-<Settings version="v0.4.6">
-	<Plugin version="v1.0.0" engine="v0.4.6" autoload="0"/>
-	<Description name="grider" brief="Template plugin project."/>
-	<Developer name="OtSoftware" web="otyazilim.com" email="info@otyazilim.com"/>
+<Settings>
+	<Plugin version="v1.0.0" engine="v0.4.9"/>
+	<Description name="grider" brief="MultiverseGo Level Designer"/>
+	<Developer name="OtSoftware" web="otsoftware.tr" email="info@otsoftware.tr"/>
 </Settings>
+
