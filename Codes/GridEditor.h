@@ -15,6 +15,7 @@
 #include <Editor/UI/Window.h>
 
 #include <unordered_map>
+#include <vector>
 
 namespace ToolKit
 {
@@ -53,11 +54,30 @@ namespace ToolKit
       TKDeclareParam(float, TileSize);
       TKDeclareParam(int, GridCols);
       TKDeclareParam(int, GridRows);
-      // Resource-relative path of the asset in the placement DropZone. Stored
-      // relative (not absolute) so the setting survives workspace moves.
-      TKDeclareParam(String, PlacementPath);
+      // Index of the selected placement area (persisted). Areas are the
+      // dropzones shown in the placement panel; Place drops the asset of the
+      // selected one.
+      TKDeclareParam(int, ActiveSlot);
       // Selected compass direction of the placement tool (persisted).
       TKDeclareParam(int, PlacementDir);
+
+      // One placement area: a dropzone that can hold a single asset. Areas are
+      // shown as launcher-style cards in a grid; the selected card is removed
+      // with the Delete key. The asset path is stored resource-relative so the
+      // setting survives workspace moves; the absolute path is runtime-only.
+      // `name` is an auto-generated label kept for persistence.
+      struct PlacementSlot
+      {
+        String name;     // Auto area label, e.g. "Area 1" (persisted).
+        String relPath;  // Resource-relative asset path (persisted form).
+        String absPath;  // Runtime-only full path.
+        String ext;      // Extension: ".mesh" / ".skinMesh" / ".scene".
+        String fileName; // File name for display.
+      };
+
+      // Placement areas in UI order. The list always ends with one empty
+      // dropzone so a new area always has somewhere to drop into.
+      std::vector<PlacementSlot> m_slots;
 
      public:
       // Called every frame by the plugin. Rebuilds the connection bridges
@@ -102,12 +122,16 @@ namespace ToolKit
       // Instantiates the dropped asset (mesh / skinMesh / scene prefab) into the
       // scene, ready to be positioned. Returns null when the asset can't be
       // loaded or isn't a supported drop type.
-      EntityPtr InstantiatePlacement(const EditorScenePtr& scene, const String& fullPath, const String& ext);
+      EntityPtr InstantiatePlacement(const EditorScenePtr& scene,
+                                     const String& fullPath,
+                                     const String& ext,
+                                     const String& name);
 
-      // Drops the instantiated asset onto the currently selected tile: centered
-      // on it, resting on its top surface, facing the selected direction, and
-      // parented under the tile so it follows the tile and can be re-aligned.
-      void PlaceObjectOnSelectedTile();
+      // Drops the instantiated asset of the given placement area onto the
+      // currently selected tile: centered on it, resting on its top surface,
+      // facing the selected direction, and parented under the tile so it
+      // follows the tile and can be re-aligned.
+      void PlaceObjectOnSelectedTile(const PlacementSlot& slot);
 
       // Center of the tile's top surface in world space. Same math as
       // RebuildBridges (local AABB offset by the world translation).
@@ -130,13 +154,6 @@ namespace ToolKit
       // re-anchors it on the tile it sits under (centered, base flush with the
       // tile top). Used to adjust a placement's direction after the fact.
       void ReorientPlacedObject(const EntityPtr& obj, int dir);
-
-      // Full (absolute) path / extension / file name of the asset in the
-      // placement DropZone. The absolute path is runtime-only; the persisted
-      // form is the resource-relative PlacementPath param.
-      String m_placementPath;
-      String m_placementExt;
-      String m_placementName;
 
       // Snapshot of a single tile's connection flags. Kept per GridNode so the
       // plugin can tell which flag a user edited and mirror the reciprocal flag

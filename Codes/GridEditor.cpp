@@ -25,6 +25,7 @@
 
 #include <filesystem>
 
+#include <cctype>
 #include <cmath>
 #include <map>
 #include <set>
@@ -118,6 +119,71 @@ namespace ToolKit
 
         return ConcatPaths({root, relative});
       }
+
+      // Byte length of the UTF-8 code point starting at text[offset] (1 for
+      // ASCII / malformed sequences) so truncation never splits a multi-byte
+      // character (accents, Turkish letters, emoji, ...).
+      size_t Utf8CharLen(const String& text, size_t offset)
+      {
+        const unsigned char c = static_cast<unsigned char>(text[offset]);
+        if ((c & 0x80) == 0) { return 1; }
+        if ((c & 0xE0) == 0xC0) { return 2; }
+        if ((c & 0xF0) == 0xE0) { return 3; }
+        if ((c & 0xF8) == 0xF0) { return 4; }
+        return 1;
+      }
+
+      // Short label for a grid cell: as-is when it fits within maxChars code
+      // points, otherwise cut at maxChars and finished with "...".
+      String TruncateLabel(const String& text, size_t maxChars)
+      {
+        size_t total = 0;
+        for (size_t i = 0; i < text.size(); ++total)
+        {
+          i += Utf8CharLen(text, i);
+        }
+        if (total <= maxChars)
+        {
+          return text;
+        }
+
+        size_t offset = 0;
+        for (size_t n = 0; n < maxChars; ++n)
+        {
+          offset += Utf8CharLen(text, offset);
+        }
+        return text.substr(0, offset) + "...";
+      }
+
+      // Next free "Area N" label: the largest existing numeric suffix + 1, so
+      // removing areas never produces duplicate auto-generated names.
+      String NextAreaName(const std::vector<GridEditor::PlacementSlot>& slots)
+      {
+        int maxNum = 0;
+        for (const GridEditor::PlacementSlot& s : slots)
+        {
+          if (s.name.size() > 5 && s.name.compare(0, 5, "Area ") == 0)
+          {
+            int num = 0;
+            bool ok = true;
+            for (size_t k = 5; k < s.name.size(); ++k)
+            {
+              if (!isdigit(static_cast<unsigned char>(s.name[k])))
+              {
+                ok = false;
+                break;
+              }
+              num = num * 10 + (s.name[k] - '0');
+            }
+            if (ok)
+            {
+              maxNum = glm::max(maxNum, num);
+            }
+          }
+        }
+
+        return "Area " + std::to_string(maxNum + 1);
+      }
     }
 
     GridEditor::GridEditor()
@@ -140,7 +206,7 @@ namespace ToolKit
       GridRows_Define(4, "Tile", 0, true, true);
       // Placement tool state. Hidden params: persisted with the window, but not
       // exposed as editable properties (they live in the window UI only).
-      PlacementPath_Define("", "Placement", 0, false, false);
+      ActiveSlot_Define(0, "Placement", 0, false, false);
       PlacementDir_Define(PlacementDirZm, "Placement", 0, false, false);
     }
 
@@ -198,7 +264,10 @@ namespace ToolKit
       return Vec3(pos.x + (bb.min.x + bb.max.x) * 0.5f, pos.y + bb.max.y, pos.z + (bb.min.z + bb.max.z) * 0.5f);
     }
 
-    EntityPtr GridEditor::InstantiatePlacement(const EditorScenePtr& scene, const String& fullPath, const String& ext)
+    EntityPtr GridEditor::InstantiatePlacement(const EditorScenePtr& scene,
+                                               const String& fullPath,
+                                               const String& ext,
+                                               const String& name)
     {
       if (scene == nullptr || fullPath.empty())
       {
@@ -217,7 +286,7 @@ namespace ToolKit
         }
 
         PrefabPtr prefab = MakeNewPtr<Prefab>();
-        prefab->SetNameVal(m_placementName);
+        prefab->SetNameVal(name);
         prefab->SetPrefabPathVal(path);
         prefab->Load();
         prefab->Init(scene);
@@ -231,7 +300,7 @@ namespace ToolKit
         // Mirrors EditorViewport::LoadDragMesh: a plain entity carrying the
         // mesh through a MeshComponent.
         EntityPtr entity = MakeNewPtr<Entity>();
-        entity->SetNameVal(m_placementName);
+        entity->SetNameVal(name);
         entity->AddComponent<MeshComponent>();
 
         MeshPtr mesh;
@@ -264,7 +333,7 @@ namespace ToolKit
       return nullptr;
     }
 
-    void GridEditor::PlaceObjectOnSelectedTile()
+    void GridEditor::PlaceObjectOnSelectedTile(const PlacementSlot& slot)
     {
       App* app = GetApp();
       if (app == nullptr)
@@ -272,7 +341,7 @@ namespace ToolKit
         return;
       }
 
-      if (m_placementPath.empty())
+      if (slot.absPath.empty())
       {
         app->SetStatusMsg(g_statusFailed);
         return;
@@ -303,13 +372,16 @@ namespace ToolKit
       // Tile top-surface center (same math as RebuildBridges).
       Vec3 topCenter = GetTileTopCenter(sel);
 
-      EntityPtr obj = InstantiatePlacement(scene, m_placementPath, m_placementExt);
+      // Face the object's -Z (front) toward the selected direction. The object
+      // is named after the dropped asset's file name (falling back to the area
+      // name).
+      const String objName = slot.fileName.empty() ? slot.name : slot.fileName;
+      EntityPtr obj        = InstantiatePlacement(scene, slot.absPath, slot.ext, objName);
       if (obj == nullptr)
       {
         return;
       }
 
-      // Face the object's -Z (front) toward the selected direction.
       float yaw = PlacementYaw(GetPlacementDirVal());
       obj->m_node->SetOrientation(glm::angleAxis(glm::radians(yaw), Y_AXIS), TransformationSpace::TS_WORLD);
 
@@ -705,6 +777,23 @@ namespace ToolKit
       // editor uses for its own windows.
       Serialize(doc.get(), root);
 
+      // Placement areas are a dynamic list, so they live outside the TKParams:
+      // one <Slot> child per area, storing the name and the resource-relative
+      // asset path. Only filled areas persist; the single trailing empty
+      // "add a new area" placeholder is runtime-only.
+      XmlNode* slotsNode = CreateXmlNode(doc.get(), "PlacementSlots", root);
+      for (const PlacementSlot& s : m_slots)
+      {
+        if (s.absPath.empty())
+        {
+          continue;
+        }
+
+        XmlNode* slotNode = CreateXmlNode(doc.get(), "Slot", slotsNode);
+        WriteAttr(slotNode, doc.get(), "name", s.name);
+        WriteAttr(slotNode, doc.get(), "path", s.relPath);
+      }
+
       std::string xml;
       rapidxml::print(std::back_inserter(xml), *doc, 0);
       file << xml;
@@ -721,42 +810,73 @@ namespace ToolKit
       }
 
       String path = ConcatPaths({app->m_workspace->GetConfigDirectory(), "GridEditor.settings"});
-      if (!CheckFile(path))
+      if (CheckFile(path))
       {
-        return;
-      }
+        XmlFilePtr file       = MakeNewPtr<XmlFile>(path.c_str());
+        XmlDocumentPtr doc    = MakeNewPtr<XmlDocument>();
+        doc->parse<0>(file->data());
 
-      XmlFilePtr file       = MakeNewPtr<XmlFile>(path.c_str());
-      XmlDocumentPtr doc    = MakeNewPtr<XmlDocument>();
-      doc->parse<0>(file->data());
+        SerializationFileInfo info;
+        info.File     = path;
+        info.Document = doc.get();
 
-      SerializationFileInfo info;
-      info.File     = path;
-      info.Document = doc.get();
-
-      if (XmlNode* root = doc->first_node("GridEditor"))
-      {
-        const char* xmlRootObject = Object::StaticClass()->Name.c_str();
-        if (XmlNode* objNode = root->first_node(xmlRootObject))
+        if (XmlNode* root = doc->first_node("GridEditor"))
         {
-          // Restores TileSize / GridCols / GridRows / PlacementPath / PlacementDir.
-          DeSerialize(info, objNode);
+          const char* xmlRootObject = Object::StaticClass()->Name.c_str();
+          if (XmlNode* objNode = root->first_node(xmlRootObject))
+          {
+            // Restores TileSize / GridCols / GridRows / ActiveSlot / PlacementDir.
+            DeSerialize(info, objNode);
+          }
+
+          // Restore the placement areas: one <Slot> per area (name + relative
+          // asset path), and re-derive the runtime fields from those paths.
+          m_slots.clear();
+          if (XmlNode* slotsNode = root->first_node("PlacementSlots"))
+          {
+            for (XmlNode* slotNode = slotsNode->first_node("Slot"); slotNode != nullptr;
+                 slotNode = slotNode->next_sibling("Slot"))
+            {
+              PlacementSlot s;
+              ReadAttr(slotNode, "name", s.name);
+              ReadAttr(slotNode, "path", s.relPath);
+              if (!s.relPath.empty())
+              {
+                s.absPath  = ToResourceAbsolutePath(s.relPath);
+                DecomposePath(s.absPath, nullptr, &s.fileName, &s.ext);
+              }
+              m_slots.push_back(s);
+            }
+          }
         }
       }
 
-      // Restore the placement asset from its persisted resource-relative path
-      // and re-derive the runtime fields from it.
-      const String& rel = GetPlacementPathVal();
-      if (!rel.empty())
+      // Legacy files may carry nameless filled slots; give them auto names.
+      for (PlacementSlot& s : m_slots)
       {
-        m_placementPath = ToResourceAbsolutePath(rel);
-        DecomposePath(m_placementPath, nullptr, &m_placementName, &m_placementExt);
+        if (!s.absPath.empty() && s.name.empty())
+        {
+          s.name = NextAreaName(m_slots);
+        }
+      }
+
+      // A fresh editor starts with one empty area ready to drop into. The
+      // empty placeholder has no name; the UI shows it as "<Empty>".
+      if (m_slots.empty())
+      {
+        m_slots.push_back(PlacementSlot());
+      }
+
+      // Keep the persisted active-area index valid.
+      if (GetActiveSlotVal() < 0 || GetActiveSlotVal() >= (int) m_slots.size())
+      {
+        SetActiveSlotVal((int) m_slots.size() - 1);
       }
     }
 
     void GridEditor::Show()
     {
-      ImGui::SetNextWindowSize(ImVec2(340, 440), ImGuiCond_Once);
+      ImGui::SetNextWindowSize(ImVec2(360, 560), ImGuiCond_Once);
       if (ImGui::Begin(m_name.c_str(), &m_visible))
       {
         HandleStates();
@@ -788,11 +908,11 @@ namespace ToolKit
           SaveSettings();
         }
 
-        ImGui::Text("Height: %.2f (fixed)", g_tileHeight);
-
         // ---- Place ----------------------------------------------------------
         ImGui::Spacing();
-        if (ImGui::Button("Place Grid", ImVec2(-FLT_MIN, 0)))
+        const float placeGridW = 120.0f;
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - placeGridW) * 0.5f);
+        if (ImGui::Button("Place Grid", ImVec2(placeGridW, 0)))
         {
           App* app = GetApp();
           if (app && app->m_cursor)
@@ -871,34 +991,186 @@ namespace ToolKit
         ImGui::Spacing();
         ImGui::SeparatorText("Placement");
 
-        // DropZone: accepts a mesh / skinMesh / scene prefab from the asset
-        // browser. Stores the dropped file so Place can instantiate it. The
-        // current m_placementPath is fed back as the file, so once something is
-        // dropped the zone shows that asset's thumbnail (empty path = plain
-        // drop target with the fallback icon).
-        View::DropZone(EditorImGuiTextureCache::Acquire(UI::m_meshIcon),
-                       m_placementPath,
-                       [this](DirectoryEntry& entry) -> void
-                       {
-                         m_placementPath = entry.GetFullPath();
-                         m_placementExt  = entry.m_ext;
-                         m_placementName = entry.m_fileName;
-                         // Persist as a workspace-relative path so the setting
-                         // survives workspace moves; keep the absolute form for
-                         // the runtime DropZone / instantiation.
-                         SetPlacementPathVal(ToResourceRelativePath(m_placementPath));
-                         SaveSettings();
-                       },
-                       "Prefab / Mesh");
+        // The placement panel is a grid of areas ("dropzones"), each holding
+        // one asset. Exactly one empty area is kept at the end as the next
+        // area's slot: once it receives a drop, a new empty one is appended.
+        // The empty placeholder has no name; the UI shows it as "<Empty>".
+        if (m_slots.empty() || !m_slots.back().absPath.empty())
+        {
+          m_slots.push_back(PlacementSlot());
+          SaveSettings();
+        }
 
-        if (!m_placementName.empty())
+        // Keep the persisted active-area index valid (removals shift the list).
+        if (GetActiveSlotVal() < 0 || GetActiveSlotVal() >= (int) m_slots.size())
         {
-          ImGui::Text("Drop: %s", m_placementName.c_str());
+          SetActiveSlotVal((int) m_slots.size() - 1);
         }
-        else
+
+        // Grid of placement areas, flowing left to right directly in the window
+        // (no child scroll region). Each cell is a launcher-style card: a frame
+        // around the dropzone with the name centered under it. Click a card to
+        // select the area Place acts on; Delete removes the selected area. Only
+        // the parent window scrolls when the grid outgrows it.
+        const float zoneW = 48.0f + ImGui::GetStyle().FramePadding.x * 2.0f; // DropZone image button footprint
+        const float cardW = 84.0f;
+        const float cardH = zoneW + ImGui::GetStyle().ItemSpacing.y + ImGui::GetTextLineHeight() + 12.0f;
+        const int gridCols =
+            glm::max(1, (int) ((ImGui::GetContentRegionAvail().x + ImGui::GetStyle().ItemSpacing.x) /
+                               (cardW + ImGui::GetStyle().ItemSpacing.x)));
+
+        int shown = 0;
+        for (int i = 0; i < (int) m_slots.size(); ++i)
         {
-          ImGui::TextDisabled("Drop a mesh or prefab (.scene) above.");
+          PlacementSlot& slot = m_slots[i];
+
+          // Only filled areas are shown, plus the single trailing empty slot
+          // that serves as the "add a new area" placeholder.
+          if (slot.absPath.empty() && i != (int) m_slots.size() - 1)
+          {
+            continue;
+          }
+
+          if (shown % gridCols != 0)
+          {
+            ImGui::SameLine();
+          }
+          ++shown;
+
+          ImGui::PushID(i);
+
+          const bool selected = (i == GetActiveSlotVal());
+          const bool filled   = !slot.absPath.empty();
+
+          // A cell is a launcher-style card: a framed area with the dropzone
+          // and the name centered under it. The child is borderless /
+          // padding-less and sized to fully contain the card, so no per-cell
+          // scrollbar ever appears; only the parent window scrolls.
+          ImGui::BeginChild("##SlotCell",
+                            ImVec2(cardW, cardH),
+                            ImGuiChildFlags_None,
+                            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+          const ImVec2 cellMin = ImGui::GetWindowPos();
+          const ImVec2 cellMax = ImVec2(cellMin.x + cardW, cellMin.y + cardH);
+
+          // Launcher-style card frame: base fill, brighter when hovered, accent
+          // border when selected.
+          const bool hovered = ImGui::IsWindowHovered();
+          ImVec4 fill        = ImGui::GetStyle().Colors[ImGuiCol_FrameBg];
+          if (hovered)
+          {
+            fill.x = glm::min(fill.x + 0.02f, 1.0f);
+            fill.y = glm::min(fill.y + 0.02f, 1.0f);
+            fill.z = glm::min(fill.z + 0.02f, 1.0f);
+          }
+          ImGui::GetWindowDrawList()->AddRectFilled(cellMin, cellMax, ImGui::GetColorU32(fill), 4.0f);
+          if (selected)
+          {
+            ImGui::GetWindowDrawList()->AddRect(ImVec2(cellMin.x - 1.0f, cellMin.y - 1.0f),
+                                                ImVec2(cellMax.x + 1.0f, cellMax.y + 1.0f),
+                                                ImGui::GetColorU32(ImVec4(0.9f, 0.6f, 0.2f, 1.0f)),
+                                                4.0f,
+                                                0,
+                                                2.0f);
+          }
+
+          // The dropzone accepts a mesh / skinMesh / scene prefab from the
+          // asset browser. The area's own path is fed back as the file, so a
+          // filled area shows that asset's thumbnail (empty path = plain drop
+          // target with the fallback icon).
+          ImGui::SetCursorPos(ImVec2((cardW - zoneW) * 0.5f, 6.0f));
+          View::DropZone(EditorImGuiTextureCache::Acquire(UI::m_meshIcon),
+                         slot.absPath,
+                         [this, i](DirectoryEntry& entry) -> void
+                         {
+                           // Only assets the placement tool can instantiate
+                           // are useful in an area.
+                           if (entry.m_ext != MESH && entry.m_ext != SKINMESH && entry.m_ext != SCENE)
+                           {
+                             GetApp()->SetStatusMsg("GridEditor: drop a mesh, skinMesh or scene prefab into an area.");
+                             return;
+                           }
+
+                           PlacementSlot& s = m_slots[i];
+                           s.absPath  = entry.GetFullPath();
+                           s.ext      = entry.m_ext;
+                           s.fileName = entry.m_fileName;
+                           // Persist as a workspace-relative path so the
+                           // setting survives workspace moves; keep the
+                           // absolute form for the runtime DropZone /
+                           // instantiation.
+                           s.relPath = ToResourceRelativePath(s.absPath);
+                           // The empty placeholder is nameless; give it an auto
+                           // name now that it holds an asset.
+                           if (s.name.empty())
+                           {
+                             s.name = NextAreaName(m_slots);
+                           }
+                           // The area that just received a drop becomes the
+                           // active one, so Place drops it right away.
+                           SetActiveSlotVal(i);
+                           SaveSettings();
+                         },
+                         "");
+
+          // A click on the dropzone selects the area.
+          if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+          {
+            SetActiveSlotVal(i);
+          }
+
+          // Name under the card, centered: the asset name when filled,
+          // "<Empty>" for the empty placeholder. Only the asset name shows in
+          // the tooltip.
+          const String label = TruncateLabel(filled ? slot.fileName : "<Empty>", 10);
+          const float labelW = ImGui::CalcTextSize(label.c_str()).x;
+          ImGui::SetCursorPos(ImVec2(glm::max(0.0f, (cardW - labelW - 4.0f) * 0.5f),
+                                     6.0f + zoneW + ImGui::GetStyle().ItemSpacing.y));
+          if (ImGui::Selectable(label.c_str(), selected, ImGuiSelectableFlags_None, ImVec2(labelW + 4.0f, 0)))
+          {
+            SetActiveSlotVal(i);
+          }
+          if (filled && ImGui::IsItemHovered())
+          {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted((slot.fileName + slot.ext).c_str());
+            ImGui::EndTooltip();
+          }
+
+          ImGui::EndChild();
+          ImGui::PopID();
         }
+
+        // Delete removes the selected area: press the Delete key or use the
+        // Delete button below.
+        const int delSlot    = GetActiveSlotVal();
+        const bool canDelete = delSlot >= 0 && delSlot < (int) m_slots.size() && !m_slots[delSlot].absPath.empty();
+        if (canDelete && ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+        {
+          m_slots.erase(m_slots.begin() + delSlot);
+          if (GetActiveSlotVal() >= (int) m_slots.size())
+          {
+            SetActiveSlotVal((int) m_slots.size() - 1);
+          }
+          SaveSettings();
+        }
+
+        // Delete button: removes the selected area from the list.
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!canDelete);
+        const float delW = 80.0f;
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - delW) * 0.5f);
+        if (ImGui::Button("Delete", ImVec2(delW, 0)))
+        {
+          m_slots.erase(m_slots.begin() + delSlot);
+          if (GetActiveSlotVal() >= (int) m_slots.size())
+          {
+            SetActiveSlotVal((int) m_slots.size() - 1);
+          }
+          SaveSettings();
+        }
+        ImGui::EndDisabled();
 
         // What the placement section acts on this frame. A tile is a placement
         // target (Place drops a new object onto it); a placed object (parented
@@ -923,7 +1195,20 @@ namespace ToolKit
           ImGui::TextDisabled("Select a tile to place, or a placed object to re-align.");
         }
 
-        // Compass: the four axis directions around a center Place button.
+        // The active area drives Place: whatever asset it holds is placed.
+        const int activeSlot = GetActiveSlotVal();
+        if (activeSlot >= 0 && activeSlot < (int) m_slots.size() && !m_slots[activeSlot].absPath.empty())
+        {
+          const PlacementSlot& active = m_slots[activeSlot];
+          ImGui::Text("Place: %s (%s)", active.name.c_str(), active.fileName.c_str());
+        }
+        else
+        {
+          ImGui::TextDisabled("Select an area that holds an asset to place.");
+        }
+
+        // Compass: Z+ above, X- [Place] X+ grouped in the middle, Z- below.
+        // Everything is centered; blank rows separate Z+ and the Place row.
         // Matches the grid axis convention (Left=-X, Right=+X, Front=-Z).
         // When a placed object is selected the compass shows (and edits) that
         // object's facing; otherwise it holds the persisted direction for the
@@ -932,45 +1217,56 @@ namespace ToolKit
         ImGui::PushID("GridPlacementCompass");
         const int startDir = onPlaced ? FacingDir(sel) : GetPlacementDirVal();
         int dir            = startDir;
-        if (ImGui::BeginTable("##GridPlacementCompass", 3))
-        {
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::Dummy(ImVec2(24, 24));
-          ImGui::TableNextColumn();
-          ImGui::RadioButton("Z+", &dir, PlacementDirZp);
-          ImGui::TableNextColumn();
-          ImGui::Dummy(ImVec2(24, 24));
+        const float availW = ImGui::GetContentRegionAvail().x;
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float radioW  = ImGui::GetFrameHeight(); // Radio circle + padding footprint.
 
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::RadioButton("X-", &dir, PlacementDirXm);
-          ImGui::TableNextColumn();
-          if (onPlaced)
-          {
-            // A placed object is re-oriented by its compass radios directly.
-            ImGui::BeginDisabled();
-            ImGui::Button("Place", ImVec2(64, 0));
-            ImGui::EndDisabled();
-          }
-          else if (ImGui::Button("Place", ImVec2(64, 0)))
+        // Z+
+        const float zPlusW = ImGui::CalcTextSize("Z+").x + radioW;
+        ImGui::SetCursorPosX((availW - zPlusW) * 0.5f);
+        ImGui::RadioButton("Z+", &dir, PlacementDirZp);
+
+        // Blank row after Z+.
+        ImGui::Dummy(ImVec2(0, 8));
+
+        // X- [Place] X+: all three next to each other, centered.
+        const float placeW = 64.0f;
+        const float groupW = (ImGui::CalcTextSize("X-").x + radioW) + spacing + placeW + spacing +
+                             (ImGui::CalcTextSize("X+").x + radioW);
+        ImGui::SetCursorPosX((availW - groupW) * 0.5f);
+        ImGui::RadioButton("X-", &dir, PlacementDirXm);
+        ImGui::SameLine();
+        if (onPlaced)
+        {
+          // A placed object is re-oriented by its compass radios directly.
+          ImGui::BeginDisabled();
+          ImGui::Button("Place", ImVec2(placeW, 0));
+          ImGui::EndDisabled();
+        }
+        else
+        {
+          // Place is active only when the selected area holds an asset.
+          const int activeSlot = GetActiveSlotVal();
+          const bool hasAsset  = activeSlot >= 0 && activeSlot < (int) m_slots.size() &&
+                                 !m_slots[activeSlot].absPath.empty();
+          ImGui::BeginDisabled(!hasAsset);
+          if (ImGui::Button("Place", ImVec2(placeW, 0)))
           {
             SetPlacementDirVal(dir);
-            PlaceObjectOnSelectedTile();
+            PlaceObjectOnSelectedTile(m_slots[activeSlot]);
           }
-          ImGui::TableNextColumn();
-          ImGui::RadioButton("X+", &dir, PlacementDirXp);
-
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::Dummy(ImVec2(24, 24));
-          ImGui::TableNextColumn();
-          ImGui::RadioButton("Z-", &dir, PlacementDirZm);
-          ImGui::TableNextColumn();
-          ImGui::Dummy(ImVec2(24, 24));
-
-          ImGui::EndTable();
+          ImGui::EndDisabled();
         }
+        ImGui::SameLine();
+        ImGui::RadioButton("X+", &dir, PlacementDirXp);
+
+        // Blank row after the Place row.
+        ImGui::Dummy(ImVec2(0, 8));
+
+        // Z-
+        const float zMinusW = ImGui::CalcTextSize("Z-").x + radioW;
+        ImGui::SetCursorPosX((availW - zMinusW) * 0.5f);
+        ImGui::RadioButton("Z-", &dir, PlacementDirZm);
 
         // Apply a direction change: re-align the selected placed object, or
         // store the new default direction for the next Place.
