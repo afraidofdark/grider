@@ -568,6 +568,35 @@ namespace ToolKit
       }
 
       graph.Nodes().push_back(n);
+
+      // Auto-open the bridge to EVERY tile the new one touches, not just the
+      // source it was extended from: when the freshly placed cell is adjacent
+      // to further tiles (a hole being filled, a perpendicular row already in
+      // place), each facing pair opens so their bridges appear at once. Both
+      // sides of a pair are set -- a bridge exists only when both tiles face
+      // each other -- and the neighbour's custom data is written through the
+      // graph on the same pass below.
+      GridDir sides[4] = {GridDir::Xm, GridDir::Xp, GridDir::Zm, GridDir::Zp};
+      for (GridDir d : sides)
+      {
+        GridNode& added = graph.Nodes().back();
+        GridNode* nb    = graph.Neighbor(added, d);
+        if (nb == nullptr)
+        {
+          continue; // No tile touching that side.
+        }
+
+        // The neighbour sits on side d of the new tile: open the new tile's
+        // own side and the neighbour's reciprocal side that faces back to it.
+        switch (d)
+        {
+          case GridDir::Xm: added.xm = true; nb->xp = true; break;
+          case GridDir::Xp: added.xp = true; nb->xm = true; break;
+          case GridDir::Zm: added.zm = true; nb->zp = true; break;
+          default:          added.zp = true; nb->zm = true; break;
+        }
+      }
+
       graph.WriteToScene();
 
       app->SetStatusMsg("Tile extended.");
