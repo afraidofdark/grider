@@ -61,7 +61,9 @@ namespace ToolKit
       // its data entity (legacy prefab tiles carry the flags on an inner "Tile"
       // entity), reads its X-/X+/Z-/Z+ custom data, computes lattice indices and
       // world positions from the tile geometry, and rebuilds the spatial index.
-      // Tiles lingering in the hierarchy after deletion are ignored.
+      // Tiles lingering in the hierarchy after deletion are ignored, and so are
+      // the plugin's own masters (the bridge node and the diorama frames),
+      // which are children of the grid but carry no tile geometry.
       void LoadFromScene(EntityPtr gridNode);
 
       // Writes every node's connection flags back to its tile's custom data.

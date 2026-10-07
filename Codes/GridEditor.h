@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "DioramaBuilder.h"
 #include "GridGraph.h"
 
 #include <Plugin.h>
@@ -66,6 +67,23 @@ namespace ToolKit
       // other.
       TKDeclareParam(int, TileExtendDir);
 
+      // Diorama frame shape (persisted). The frame wraps a selection the way a
+      // display base does: a plinth the selection stands on, walls rising
+      // around its outside, and a bracket at every turning point of the
+      // outline. Every value is a multiple of the tile size of the grid the
+      // frame belongs to, so the frame reads the same at any scene scale.
+      TKDeclareParam(float, DioramaPlinthMargin);
+      TKDeclareParam(float, DioramaPlinthDepth);
+      TKDeclareParam(float, DioramaWallHeight);
+      TKDeclareParam(float, DioramaWallThickness);
+      TKDeclareParam(float, DioramaCornerSize);
+      TKDeclareParam(float, DioramaCornerRise);
+      TKDeclareParam(float, DioramaCornerOverhang);
+      TKDeclareParam(bool, DioramaSolid);
+      TKDeclareParam(Vec3, DioramaBaseColor);
+      TKDeclareParam(Vec3, DioramaWallColor);
+      TKDeclareParam(Vec3, DioramaBracketColor);
+
       // One placement area: a dropzone that can hold a single asset. Areas are
       // shown as launcher-style cards in a grid; the selected card is removed
       // with the Delete key. The asset path is stored resource-relative so the
@@ -89,6 +107,12 @@ namespace ToolKit
       // (bridge quads under each GridNode's BridgeNode) whenever the tiles'
       // custom data state changes.
       void UpdateBridges();
+
+      // Called every frame by the plugin. Rebuilds the meshes of the dioramas
+      // in the scene from the recipe they carry, which is what brings a frame
+      // back after the scene was saved and loaded again (a generated mesh is
+      // not a resource file, so it does not survive on its own).
+      void UpdateDioramas();
 
      private:
       // Returns (creating and persisting on first use) an unlit color material
@@ -184,6 +208,31 @@ namespace ToolKit
       // Cached per-tile connection flags per GridNode. Compared against the live
       // state in RebuildBridges to find the flag the user changed.
       std::unordered_map<ObjectId, std::map<String, TileFlags>> m_tileFlags;
+
+      // ---- Diorama tool -----------------------------------------------------
+
+      // Wraps the current selection in a diorama frame: the selected tiles (or
+      // the tiles the selected objects stand on, or the whole grid) become the
+      // footprint of the frame. One diorama is built per grid the selection
+      // touches.
+      void BuildDioramaFromSelection();
+
+      // The frame parameters of the window as a builder recipe. The footprint
+      // and its lattice belong to the selection and are filled in by the
+      // callers.
+      DioramaSpec CurrentDioramaSpec() const;
+
+      // Removes every diorama from the scene, meshes included.
+      void ClearDioramas();
+
+      // Writes the frame parameters of the window into the recipe of every
+      // diorama in the scene, so tuning a value retunes the frames that are
+      // already built (UpdateDioramas rebuilds them on the next frame).
+      void ApplyDioramaSettingsToAll();
+
+      // Cached recipe per diorama master; drives change detection in
+      // UpdateDioramas.
+      std::unordered_map<ObjectId, String> m_dioramaSignatures;
     };
 
     typedef std::shared_ptr<GridEditor> GridEditorPtr;

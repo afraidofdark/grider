@@ -7,6 +7,8 @@
 
 #include "GridEditor.h"
 
+#include "DioramaBuilder.h"
+
 #include <Editor/Source/App.h>
 #include <Editor/Source/EditorScene.h>
 #include <Editor/UI/EditorImGuiTextureCache.h>
@@ -25,7 +27,9 @@
 
 #include <filesystem>
 
+#include <algorithm>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <map>
 #include <set>
@@ -184,6 +188,149 @@ namespace ToolKit
 
         return "Area " + std::to_string(maxNum + 1);
       }
+
+      // The frame parameters the window starts with. Both the parameter
+      // definitions and the builder's own fallbacks read the defaults from
+      // here, so there is one place to change them.
+      const DioramaSpec g_defaultDioramaSpec;
+
+      // Cells of a footprint, keyed by lattice index: a selection that covers
+      // the same cell twice (a tile and the object standing on it) wraps it
+      // once, and the lattice index is all the tracing needs.
+      typedef std::set<std::pair<int, int>> CellSet;
+
+      // Upper bound of the cells one diorama may wrap. A selection that covers
+      // more than this (the ground plane of the whole scene dragged over with
+      // the mouse) is refused with a message instead of generating a frame
+      // with millions of boxes in it. A cell costs one box of the fill plus its
+      // share of the outline, so this is a few hundred thousand vertices.
+      constexpr long long g_maxDioramaCells = 16384;
+
+      // One diorama to build: the grid it hangs under (null for the scene
+      // root), the lattice its cells live on, and the selected content that
+      // defines them.
+      struct DioramaFootprint
+      {
+        EntityPtr grid;                 // Host grid, null when there is none.
+        Diorama::Layout layout;         // Lattice the cells are addressed on.
+        CellSet cells;                  // Footprint of the frame.
+        std::set<ObjectId> tiles;       // Tiles selected in this grid.
+        bool wholeGrid = false;         // The grid root itself was selected.
+        std::vector<BoundingBox> loose; // Selected geometry that is not a tile.
+      };
+
+      // Turns the cells a rasterized selection produced into the footprint of a
+      // frame. Both steps exist because wrapping BOUNDING BOXES is an
+      // approximation, not a plan the author drew:
+      //  - the pieces of the selection that stand close together are merged
+      //    (a morphological closing), so a car parked next to a sidewalk does
+      //    not get a wall of its own;
+      //  - the gaps the pieces enclose are filled in, so the wall only ever
+      //    runs around the outside of the selection instead of fencing off a
+      //    hole in the middle of it.
+      // A footprint made of tiles is left alone: there every cell, and every
+      // hole between them, is the author's explicit selection.
+      void MergeRasterizedFootprint(CellSet& cells, const Diorama::Layout& layout)
+      {
+        if (cells.empty())
+        {
+          return;
+        }
+
+        std::vector<Diorama::Cell> raw;
+        raw.reserve(cells.size());
+        for (const std::pair<int, int>& cell : cells)
+        {
+          raw.push_back({cell.first, cell.second});
+        }
+
+        // The merge radius is half a tile, in cells of the lattice the
+        // selection was rasterized on. A lattice that is already tile sized
+        // (a footprint that came from tiles) needs no merging at all.
+        const float unit = Diorama::UnitOfLayout(layout);
+        const float step = glm::max(layout.tileX, 0.0001f);
+        const int radius = step < unit * 0.99f ? (int) std::lround(unit * 0.5f / step) : 0;
+
+        std::vector<Diorama::Cell> merged;
+        Diorama::CloseFootprint(raw, radius, merged);
+
+        std::vector<Diorama::Cell> filled;
+        Diorama::FillRegion(merged, filled);
+
+        cells.clear();
+        for (const Diorama::Cell& cell : filled)
+        {
+          cells.insert({cell.x, cell.z});
+        }
+      }
+
+      // Marks the cells of a selected entity on the lattice of a footprint and
+      // refuses the ones that would make the frame too big to build. The
+      // coverage rule lives with the geometry (Diorama::RasterizeBounds); this
+      // is the scene side of it.
+      bool RasterizeBounds(const BoundingBox& bounds, const Diorama::Layout& layout, CellSet& cells)
+      {
+        std::vector<Diorama::Cell> marked;
+        Diorama::RasterizeBounds(bounds.min.x, bounds.min.z, bounds.max.x, bounds.max.z, layout, marked);
+
+        if ((long long) marked.size() > g_maxDioramaCells)
+        {
+          return false;
+        }
+
+        for (const Diorama::Cell& cell : marked)
+        {
+          cells.insert({cell.x, cell.z});
+        }
+
+        return true;
+      }
+
+      // Lattice of a grid: the graph addresses its nodes by lattice index, and
+      // cell (0, 0) sits at the grid's minimum corner. The floor is the tile
+      // top surface (the height the walkable grid is picked at).
+      Diorama::Layout LayoutOfGraph(const GridGraph& graph)      {
+        Diorama::Layout layout;
+
+        if (graph.Nodes().empty())
+        {
+          return layout;
+        }
+
+        float minX = FLT_MAX, minZ = FLT_MAX, floorY = FLT_MAX;
+        for (const GridNode& node : graph.Nodes())
+        {
+          minX   = glm::min(minX, node.center.x);
+          minZ   = glm::min(minZ, node.center.z);
+          floorY = glm::min(floorY, node.center.y);
+        }
+
+        layout.originX    = minX;
+        layout.originZ    = minZ;
+        layout.tileX      = graph.Nodes()[0].size.x;
+        layout.tileZ      = graph.Nodes()[0].size.z;
+        layout.floorY     = floorY;
+        layout.tileHeight = graph.Nodes()[0].size.y;
+        return layout;
+      }
+
+      // True when the entity is part of the tool's own scaffolding (a diorama
+      // frame, one of its meshes, or a bridge). Those are never part of a
+      // footprint: a selection that covers them would otherwise wrap the frame
+      // the tool built instead of the content under it.
+      bool IsToolGeometry(EntityPtr entity)
+      {
+        for (EntityPtr walk = entity; walk != nullptr; walk = walk->Parent())
+        {
+          const String& name = walk->GetNameVal();
+          if (name == "DioramaNode" || name == "BridgeNode" || name == "Bridge")
+          {
+            return true;
+          }
+        }
+
+        return false;
+      }
     }
 
     GridEditor::GridEditor()
@@ -209,6 +356,409 @@ namespace ToolKit
       ActiveSlot_Define(0, "Placement", 0, false, false);
       PlacementDir_Define(PlacementDirZm, "Placement", 0, false, false);
       TileExtendDir_Define(PlacementDirZm, "Placement", 0, false, false);
+
+      // Diorama frame. Defaults come from the builder's own recipe, so a fresh
+      // window and a diorama rebuilt from a scene agree on the shape. Values
+      // are multiples of the tile size of the grid the frame wraps.
+      const Diorama::Params& shape  = g_defaultDioramaSpec.shape;
+      DioramaPlinthMargin_Define(shape.plinthMargin, "Diorama", 0, true, true);
+      DioramaPlinthDepth_Define(shape.plinthDepth, "Diorama", 0, true, true);
+      DioramaWallHeight_Define(shape.wallHeight, "Diorama", 0, true, true);
+      DioramaWallThickness_Define(shape.wallThickness, "Diorama", 0, true, true);
+      DioramaCornerSize_Define(shape.cornerSize, "Diorama", 0, true, true);
+      DioramaCornerRise_Define(shape.cornerRise, "Diorama", 0, true, true);
+      DioramaCornerOverhang_Define(shape.cornerOverhang, "Diorama", 0, true, true);
+      DioramaSolid_Define(shape.solid, "Diorama", 0, true, true);
+      DioramaBaseColor_Define(g_defaultDioramaSpec.baseColor, "Diorama", 0, true, true);
+      DioramaWallColor_Define(g_defaultDioramaSpec.frameColor, "Diorama", 0, true, true);
+      DioramaBracketColor_Define(g_defaultDioramaSpec.bracketColor, "Diorama", 0, true, true);
+    }
+
+    DioramaSpec GridEditor::CurrentDioramaSpec() const
+    {
+      DioramaSpec spec;
+      spec.shape.plinthMargin   = GetDioramaPlinthMarginVal();
+      spec.shape.plinthDepth    = GetDioramaPlinthDepthVal();
+      spec.shape.wallHeight     = GetDioramaWallHeightVal();
+      spec.shape.wallThickness  = GetDioramaWallThicknessVal();
+      spec.shape.cornerSize     = GetDioramaCornerSizeVal();
+      spec.shape.cornerRise     = GetDioramaCornerRiseVal();
+      spec.shape.cornerOverhang = GetDioramaCornerOverhangVal();
+      spec.shape.solid          = GetDioramaSolidVal();
+      spec.baseColor            = GetDioramaBaseColorVal();
+      spec.frameColor           = GetDioramaWallColorVal();
+      spec.bracketColor         = GetDioramaBracketColorVal();
+      return spec;
+    }
+
+    void GridEditor::BuildDioramaFromSelection()
+    {
+      App* app = GetApp();
+      EditorScenePtr scene = app ? app->GetCurrentScene() : nullptr;
+      if (scene == nullptr)
+      {
+        return;
+      }
+
+      EntityPtrArray selection;
+      scene->GetSelectedEntities(selection);
+      if (selection.empty())
+      {
+        app->SetStatusMsg("Diorama: select the tiles, objects or grid to wrap.");
+        return;
+      }
+
+      // Sort the selection into the footprints it stands for. A tile is its own
+      // cell; an object placed by the tool is the cell it stands on; a grid
+      // root is the whole grid; anything else is wrapped by the box it
+      // occupies. Each grid gets its own frame, so a selection spanning two
+      // grids builds two.
+      std::vector<DioramaFootprint> footprints;
+      std::map<ObjectId, size_t> byGrid;
+
+      auto groupFor = [&](const EntityPtr& grid) -> size_t
+      {
+        auto found = byGrid.find(grid->GetIdVal());
+        if (found != byGrid.end())
+        {
+          return found->second;
+        }
+
+        DioramaFootprint footprint;
+        footprint.grid = grid;
+        footprints.push_back(footprint);
+        byGrid[grid->GetIdVal()] = footprints.size() - 1;
+        return footprints.size() - 1;
+      };
+
+      std::vector<BoundingBox> orphanBounds; // Selection with no grid behind it.
+      std::vector<float> orphanBottoms;      // Their bottoms, for the floor level.
+      for (EntityPtr entity : selection)
+      {
+        if (entity == nullptr)
+        {
+          continue;
+        }
+
+        // The tool's own scaffolding is never content: a box drag over a frame
+        // that is already built must not wrap the frame itself.
+        if (IsToolGeometry(entity))
+        {
+          continue;
+        }
+
+        if (entity->GetNameVal() == "GridNode")
+        {
+          footprints[groupFor(entity)].wholeGrid = true;
+          continue;
+        }
+
+        if (IsTile(entity))
+        {
+          if (EntityPtr grid = entity->Parent())
+          {
+            footprints[groupFor(grid)].tiles.insert(entity->GetIdVal());
+          }
+          continue;
+        }
+
+        if (IsPlacedObject(entity))
+        {
+          EntityPtr tile = entity->Parent();
+          EntityPtr grid = tile ? tile->Parent() : nullptr;
+          if (grid != nullptr && tile != nullptr)
+          {
+            footprints[groupFor(grid)].tiles.insert(tile->GetIdVal());
+          }
+          continue;
+        }
+
+        // Not part of the grid: the frame follows the box the entity occupies.
+        const BoundingBox bounds = GetWorldBounds(entity);
+        EntityPtr grid           = nullptr;
+        for (EntityPtr parent = entity->Parent(); parent != nullptr; parent = parent->Parent())
+        {
+          if (parent->GetNameVal() == "GridNode")
+          {
+            grid = parent;
+            break;
+          }
+        }
+
+        if (grid != nullptr)
+        {
+          footprints[groupFor(grid)].loose.push_back(bounds);
+        }
+        else
+        {
+          orphanBounds.push_back(bounds);
+          orphanBottoms.push_back(bounds.min.y);
+        }
+      }
+
+      // ---- Cells of every footprint ----------------------------------------
+      int refused = 0;
+      for (DioramaFootprint& footprint : footprints)
+      {
+        GridGraph graph;
+        graph.LoadFromScene(footprint.grid);
+        if (graph.Nodes().empty())
+        {
+          continue;
+        }
+
+        footprint.layout = LayoutOfGraph(graph);
+
+        for (const GridNode& node : graph.Nodes())
+        {
+          if (footprint.wholeGrid ||
+              (node.tile != nullptr && footprint.tiles.find(node.tile->GetIdVal()) != footprint.tiles.end()))
+          {
+            footprint.cells.insert({node.ix, node.iz});
+          }
+        }
+
+        for (const BoundingBox& bounds : footprint.loose)
+        {
+          if (!RasterizeBounds(bounds, footprint.layout, footprint.cells))
+          {
+            ++refused;
+          }
+        }
+
+        // A rasterized footprint is merged and its enclosed gaps are filled in
+        // (see MergeRasterizedFootprint); a footprint of tiles keeps its holes,
+        // because there a hole is the author's intent.
+        if (!footprint.loose.empty())
+        {
+          MergeRasterizedFootprint(footprint.cells, footprint.layout);
+        }
+      }
+
+      // A selection that has no grid behind it (a scene that never placed one)
+      // still gets a frame: its lattice is laid over the selection's own corner.
+      if (!orphanBounds.empty())
+      {
+        DioramaFootprint footprint;
+        footprint.grid = nullptr;
+
+        // The lattice of a rasterized footprint is FINER than the tile grid.
+        // A cell boundary is only as precise as the cell itself, so tile sized
+        // cells would leave up to half a tile of bare plinth between the
+        // content and its wall. The step adapts to the selection (never finer
+        // than an eighth of a tile, never coarser than a tile), which keeps the
+        // cell count bounded whatever the size of the selection is.
+        const float shapeTile = glm::max(GetTileSizeVal(), 0.01f);
+
+        BoundingBox all = orphanBounds[0];
+        for (const BoundingBox& bounds : orphanBounds)
+        {
+          all.UpdateBoundary(bounds);
+        }
+
+        const float extent = glm::max(all.max.x - all.min.x, all.max.z - all.min.z);
+        const float step   = glm::clamp(extent / 96.0f, shapeTile * 0.125f, shapeTile);
+
+        footprint.layout.tileX      = step;
+        footprint.layout.tileZ      = step;
+        footprint.layout.tileUnit   = shapeTile; // The shape stays in TILE units.
+        footprint.layout.tileHeight = 0.0f;
+
+        footprint.layout.originX = std::floor(all.min.x / step) * step;
+        footprint.layout.originZ = std::floor(all.min.z / step) * step;
+
+        // The floor is where the selection as a whole STANDS, not where its
+        // lowest piece reaches: a selection that includes a ground plane or a
+        // foundation would otherwise leave the content floating above a plinth
+        // that starts below it. The median of the pieces' bottoms is the level
+        // most of the selection rests on.
+        std::vector<float> bottoms = orphanBottoms;
+        std::sort(bottoms.begin(), bottoms.end());
+        footprint.layout.floorY = bottoms.empty() ? all.min.y : bottoms[bottoms.size() / 2];
+
+        for (const BoundingBox& bounds : orphanBounds)
+        {
+          if (!RasterizeBounds(bounds, footprint.layout, footprint.cells))
+          {
+            ++refused;
+          }
+        }
+
+        MergeRasterizedFootprint(footprint.cells, footprint.layout);
+
+        footprints.push_back(footprint);
+      }
+
+      // ---- Build ------------------------------------------------------------
+      const DioramaSpec settings = CurrentDioramaSpec();
+
+      int frames = 0, wrapped = 0;
+      for (DioramaFootprint& footprint : footprints)
+      {
+        if (footprint.cells.empty())
+        {
+          continue;
+        }
+
+        DioramaSpec spec = settings;
+        spec.layout      = footprint.layout;
+        for (const std::pair<int, int>& cell : footprint.cells)
+        {
+          spec.cells.push_back({cell.first, cell.second});
+        }
+
+        EntityPtr node = BuildDiorama(scene, footprint.grid, spec);
+        if (node != nullptr)
+        {
+          m_dioramaSignatures[node->GetIdVal()] = DioramaSignature(spec);
+          ++frames;
+          wrapped += (int) spec.cells.size();
+        }
+      }
+
+      if (refused > 0)
+      {
+        TK_ERR("Diorama: %d selected entity(s) cover more than %lld cells; select a smaller area to wrap.",
+               refused,
+               g_maxDioramaCells);
+      }
+
+      if (frames == 0)
+      {
+        app->SetStatusMsg(refused > 0 ? "Diorama: the selection is too large to wrap."
+                                      : "Diorama: nothing to wrap in the selection.");
+        return;
+      }
+
+      app->SetStatusMsg("Diorama: wrapped " + std::to_string(wrapped) + " cell(s) in " + std::to_string(frames) +
+                        " frame(s).");
+    }
+
+    void GridEditor::ClearDioramas()
+    {
+      App* app = GetApp();
+      EditorScenePtr scene = app ? app->GetCurrentScene() : nullptr;
+      if (scene == nullptr)
+      {
+        return;
+      }
+
+      // Collect first: removing an entity mutates the scene's list.
+      EntityPtrArray dioramas;
+      for (EntityPtr entity : scene->GetEntities())
+      {
+        if (IsDioramaNode(entity))
+        {
+          dioramas.push_back(entity);
+        }
+      }
+
+      for (EntityPtr diorama : dioramas)
+      {
+        RemoveDiorama(scene, diorama);
+      }
+
+      m_dioramaSignatures.clear();
+
+      if (app != nullptr)
+      {
+        app->SetStatusMsg(dioramas.empty() ? "Diorama: there was no frame to clear."
+                                           : "Diorama: frames removed.");
+      }
+    }
+
+    void GridEditor::ApplyDioramaSettingsToAll()
+    {
+      App* app = GetApp();
+      EditorScenePtr scene = app ? app->GetCurrentScene() : nullptr;
+      if (scene == nullptr)
+      {
+        return;
+      }
+
+      const DioramaSpec settings = CurrentDioramaSpec();
+      for (EntityPtr entity : scene->GetEntities())
+      {
+        if (!IsDioramaNode(entity))
+        {
+          continue;
+        }
+
+        DioramaSpec spec;
+        if (!ReadDioramaSpec(entity, spec))
+        {
+          continue;
+        }
+
+        // Only the shape and the colors follow the window: the footprint of a
+        // frame stays the cells it was built around.
+        spec.shape        = settings.shape;
+        spec.baseColor    = settings.baseColor;
+        spec.frameColor   = settings.frameColor;
+        spec.bracketColor = settings.bracketColor;
+        WriteDioramaSpec(entity, spec);
+      }
+    }
+
+    void GridEditor::UpdateDioramas()
+    {
+      App* app = GetApp();
+      if (app == nullptr || app->m_gameMod != GameMod::Stop)
+      {
+        return;
+      }
+
+      EditorScenePtr scene = app->GetCurrentScene();
+      if (scene == nullptr)
+      {
+        return;
+      }
+
+      // Collect first: a rebuild adds and removes entities.
+      EntityPtrArray dioramas;
+      for (EntityPtr entity : scene->GetEntities())
+      {
+        if (IsDioramaNode(entity))
+        {
+          dioramas.push_back(entity);
+        }
+      }
+
+      std::unordered_set<ObjectId> live;
+      for (EntityPtr diorama : dioramas)
+      {
+        live.insert(diorama->GetIdVal());
+
+        DioramaSpec spec;
+        if (!ReadDioramaSpec(diorama, spec))
+        {
+          continue;
+        }
+
+        // The recipe is the single source of the geometry: a diorama whose
+        // recipe changed (a retuned parameter) or that was just loaded from a
+        // scene file (its meshes are empty then) is rebuilt here.
+        const String signature = DioramaSignature(spec);
+        auto found             = m_dioramaSignatures.find(diorama->GetIdVal());
+        if (found == m_dioramaSignatures.end() || found->second != signature)
+        {
+          RebuildDiorama(scene, diorama);
+          m_dioramaSignatures[diorama->GetIdVal()] = signature;
+        }
+      }
+
+      // Drop signatures of dioramas that no longer exist.
+      for (auto it = m_dioramaSignatures.begin(); it != m_dioramaSignatures.end();)
+      {
+        if (live.find(it->first) == live.end())
+        {
+          it = m_dioramaSignatures.erase(it);
+        }
+        else
+        {
+          ++it;
+        }
+      }
     }
 
     float GridEditor::PlacementYaw(int dir) const
@@ -604,28 +1154,9 @@ namespace ToolKit
 
     MaterialPtr GridEditor::GetOrCreateUnlitColorMaterial(const String& fileName, const Vec3& color)
     {
-      const String path = MaterialPath(fileName);
-
-      // Idempotent: the material is saved with the project, so an existing
-      // material file is loaded (and cached) instead of re-created.
-      if (CheckFile(path))
-      {
-        return GetMaterialManager()->Create<Material>(path);
-      }
-
-      // First use: build an unlit color material (no diffuse texture, so the
-      // unlit shader uses the material color) and persist it under the project
-      // resources. It then survives restarts and is shared by every grid.
-      std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-
-      MaterialPtr mat = GetMaterialManager()->GetCopyOfUnlitColorMaterial(false);
-      mat->SetFile(path);
-      mat->SetColorVal(color);
-      mat->Init(false);
-      mat->Save(false);
-      GetMaterialManager()->Manage(mat);
-
-      return mat;
+      // Shared with the diorama materials; the grid's own materials keep the
+      // color they were first created with.
+      return GetOrCreateColorMaterial(fileName, color, false);
     }
 
     MaterialPtr GridEditor::GetOrCreateCheckerMaterial(bool dark)
@@ -1514,6 +2045,177 @@ namespace ToolKit
           SetPlacementDirVal(dir);
           SaveSettings();
         }
+
+        // ---- Diorama ---------------------------------------------------------
+        // Wraps a selection in a display base: the outline of what is selected
+        // is traced and extruded into the plinth the selection stands on, walls
+        // running around its outside, and a bracket at every turning point of
+        // that outline. The shape is given in tile units, so the frame reads
+        // the same whatever the tile size of the grid is.
+        ImGui::Spacing();
+        ImGui::SeparatorText("Diorama");
+
+        int dioramaCount = 0;
+        if (scene != nullptr)
+        {
+          for (EntityPtr entity : scene->GetEntities())
+          {
+            if (IsDioramaNode(entity))
+            {
+              ++dioramaCount;
+            }
+          }
+        }
+
+        const int selectedCount = scene ? (int) scene->GetSelectedEntityCount() : 0;
+        if (selectedCount == 0)
+        {
+          ImGui::TextDisabled("Select tiles or objects (box drag or ctrl+click),");
+          ImGui::TextDisabled("then press Build Frame.");
+        }
+        else
+        {
+          ImGui::Text("%d entity(s) selected.", selectedCount);
+        }
+
+        // Sliders edit the value live, but the frames already in the scene are
+        // retuned and saved when the edit is finished: dragging a slider must
+        // not rebuild the meshes of every diorama on every frame.
+        auto shapeSlider = [this](const char* label,
+                                  float value,
+                                  float min,
+                                  float max,
+                                  const std::function<void(float)>& store) -> void
+        {
+          if (ImGui::SliderFloat(label, &value, min, max, "%.2f"))
+          {
+            store(value);
+          }
+          if (ImGui::IsItemDeactivatedAfterEdit())
+          {
+            SaveSettings();
+            ApplyDioramaSettingsToAll();
+          }
+        };
+
+        // The tile the values are multiplied with: the grid the frame belongs
+        // to, or the tool's own tile size for a scene without a grid. Shown as
+        // a world size so the sliders stay readable.
+        const float shapeTile = glm::max(GetTileSizeVal(), 0.01f);
+        ImGui::TextDisabled("values x tile (%.2f u)", shapeTile);
+
+        shapeSlider("Plinth margin (x tile)",
+                    GetDioramaPlinthMarginVal(),
+                    0.02f,
+                    1.0f,
+                    [this](float v) -> void { SetDioramaPlinthMarginVal(v); });
+        shapeSlider("Plinth depth (x tile)",
+                    GetDioramaPlinthDepthVal(),
+                    0.0f,
+                    2.0f,
+                    [this](float v) -> void { SetDioramaPlinthDepthVal(v); });
+        shapeSlider("Wall height (x tile)",
+                    GetDioramaWallHeightVal(),
+                    0.0f,
+                    2.0f,
+                    [this](float v) -> void { SetDioramaWallHeightVal(v); });
+        shapeSlider("Wall thickness (x tile)",
+                    GetDioramaWallThicknessVal(),
+                    0.0f,
+                    0.6f,
+                    [this](float v) -> void { SetDioramaWallThicknessVal(v); });
+        shapeSlider("Corner size (x tile)",
+                    GetDioramaCornerSizeVal(),
+                    0.0f,
+                    0.8f,
+                    [this](float v) -> void { SetDioramaCornerSizeVal(v); });
+        shapeSlider("Corner rise (x tile)",
+                    GetDioramaCornerRiseVal(),
+                    0.0f,
+                    0.8f,
+                    [this](float v) -> void { SetDioramaCornerRiseVal(v); });
+        shapeSlider("Corner overhang (x tile)",
+                    GetDioramaCornerOverhangVal(),
+                    0.0f,
+                    0.3f,
+                    [this](float v) -> void { SetDioramaCornerOverhangVal(v); });
+
+        // One click presets: the wall straight on the edge of the selection
+        // (nothing but walls), or a wall around a table top margin.
+        auto preset = [this](float margin, float depth, float wall, float thickness) -> void
+        {
+          SetDioramaPlinthMarginVal(margin);
+          SetDioramaPlinthDepthVal(depth);
+          SetDioramaWallHeightVal(wall);
+          SetDioramaWallThicknessVal(thickness);
+          SaveSettings();
+          ApplyDioramaSettingsToAll();
+        };
+
+        const float presetW = 108.0f;
+        if (ImGui::Button("Walls only", ImVec2(presetW, 0)))
+        {
+          preset(0.16f, 0.5f, 0.6f, 0.16f);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Table + walls", ImVec2(presetW, 0)))
+        {
+          preset(0.4f, 0.5f, 0.6f, 0.16f);
+        }
+
+        bool solid = GetDioramaSolidVal();
+        if (ImGui::Checkbox("Solid plinth", &solid))
+        {
+          SetDioramaSolidVal(solid);
+          SaveSettings();
+          ApplyDioramaSettingsToAll();
+        }
+
+        auto colorEdit = [this](const char* label,
+                                const Vec3& value,
+                                const std::function<void(const Vec3&)>& store) -> void
+        {
+          float rgb[3] {value.x, value.y, value.z};
+          if (ImGui::ColorEdit3(label, rgb))
+          {
+            store(Vec3(rgb[0], rgb[1], rgb[2]));
+          }
+          if (ImGui::IsItemDeactivatedAfterEdit())
+          {
+            SaveSettings();
+            ApplyDioramaSettingsToAll();
+          }
+        };
+
+        colorEdit("Plinth color",
+                  GetDioramaBaseColorVal(),
+                  [this](const Vec3& c) -> void { SetDioramaBaseColorVal(c); });
+        colorEdit("Wall color",
+                  GetDioramaWallColorVal(),
+                  [this](const Vec3& c) -> void { SetDioramaWallColorVal(c); });
+        colorEdit("Bracket color",
+                  GetDioramaBracketColorVal(),
+                  [this](const Vec3& c) -> void { SetDioramaBracketColorVal(c); });
+
+        ImGui::Spacing();
+        const float dioramaBtnW = 96.0f;
+        const float dioramaRowW = dioramaBtnW * 2.0f + ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - dioramaRowW) * 0.5f);
+
+        ImGui::BeginDisabled(selectedCount == 0);
+        if (ImGui::Button("Build Frame", ImVec2(dioramaBtnW, 0)))
+        {
+          BuildDioramaFromSelection();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        ImGui::BeginDisabled(dioramaCount == 0);
+        if (ImGui::Button("Clear Frames", ImVec2(dioramaBtnW, 0)))
+        {
+          ClearDioramas();
+        }
+        ImGui::EndDisabled();
       }
       ImGui::End();
     }

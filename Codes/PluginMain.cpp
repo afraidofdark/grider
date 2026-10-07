@@ -35,6 +35,7 @@ namespace ToolKit
       if (g_gridEditor)
       {
         g_gridEditor->UpdateBridges();
+        g_gridEditor->UpdateDioramas();
       }
     }
 

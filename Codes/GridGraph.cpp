@@ -114,11 +114,13 @@ namespace ToolKit
       }
 
       // Collect the tiles: direct children of the grid root, excluding the
-      // plugin's BridgeNode master. Same guards as the editor's grid signature.
+      // plugin's own masters (bridges and diorama frames carry no tile
+      // geometry and are not part of the lattice). Same guards as the editor's
+      // grid signature.
       for (Node* childNode : gridNode->m_node->m_children)
       {
         EntityPtr child = childNode->OwnerEntity();
-        if (child == nullptr || child->GetNameVal() == "BridgeNode")
+        if (child == nullptr || child->GetNameVal() == "BridgeNode" || child->GetNameVal() == "DioramaNode")
         {
           continue;
         }
